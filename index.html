@@ -591,7 +591,8 @@ function exportDataToFile() {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-  showToast('Backup file downloaded.');
+  const stillPending = data.orders.filter(isStillIncoming).length;
+  showToast(`Backup saved: ${data.suppliers.length} suppliers, ${data.items.length} items, ${data.cart.length} in cart, ${stillPending} pending orders.`);
 }
 
 function importDataFromFile(file) {
