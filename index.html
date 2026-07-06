@@ -233,8 +233,6 @@ function gaugeLevel(item, orders, date = new Date()) {
 
 const WEEKDAY_CN = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
 
-const INTERNAL_PERSON_WHATSAPP = '85268240691'; // gets a copy of every normal supplier order, for record-keeping
-
 function chineseDayWord(dateStr, isAdditional, prefix) {
   let word;
   if (!dateStr || dateStr === todayStr()) word = isAdditional ? '今日加多' : '今日';
@@ -273,417 +271,6 @@ async function sendOrShareMessage(phone, message, windowName) {
 }
 
 
-const REAL_SUPPLIER_NAMES = [
-  "五豐",
-  "佳寶",
-  "信二",
-  "信希",
-  "信德",
-  "偉森",
-  "偉發",
-  "光一",
-  "其士",
-  "合群",
-  "嘉明",
-  "四洲",
-  "四興",
-  "國恆",
-  "大昌",
-  "威信",
-  "康利",
-  "康天",
-  "形豐",
-  "德盛",
-  "恆盛",
-  "捷朗",
-  "新柏林",
-  "新興城",
-  "有成",
-  "李樹",
-  "永富",
-  "沙田",
-  "泰興",
-  "浩新",
-  "海富",
-  "海富寶",
-  "海欣",
-  "海發",
-  "海盛",
-  "湖記",
-  "漢陸",
-  "潤華",
-  "澤興",
-  "百加",
-  "盈星",
-  "福祥",
-  "萬永",
-  "運裕",
-  "運裕通",
-  "金山",
-  "金發",
-  "領先",
-];
-
-const REAL_WAREHOUSE_NAMES = [
-  "亞洲",
-  "光一",
-  "其士",
-  "嘉一",
-  "嘉二",
-  "威強",
-  "沙田",
-  "泰興",
-  "金發",
-];
-
-// supplier -> their most common pickup warehouse (used as the supplier default)
-const REAL_SUPPLIER_DEFAULT_WAREHOUSE = {
-  "五豐": "沙田",
-  "佳寶": "光一",
-  "信二": "光一",
-  "信希": "沙田",
-  "信德": "沙田",
-  "偉森": "光一",
-  "偉發": "光一",
-  "光一": "光一",
-  "其士": "其士",
-  "合群": "光一",
-  "嘉明": "",
-  "四洲": "嘉二",
-  "四興": "其士",
-  "國恆": "光一",
-  "大昌": "嘉二",
-  "威信": "嘉二",
-  "康利": "嘉一",
-  "康天": "亞洲",
-  "形豐": "其士",
-  "德盛": "光一",
-  "恆盛": "光一",
-  "捷朗": "沙田",
-  "新柏林": "光一",
-  "新興城": "嘉二",
-  "有成": "威強",
-  "李樹": "亞洲",
-  "永富": "光一",
-  "沙田": "沙田",
-  "泰興": "泰興",
-  "浩新": "嘉一",
-  "海富": "光一",
-  "海富寶": "光一",
-  "海欣": "嘉一",
-  "海發": "嘉一",
-  "海盛": "沙田",
-  "湖記": "嘉二",
-  "漢陸": "沙田",
-  "潤華": "亞洲",
-  "澤興": "其士",
-  "百加": "嘉二",
-  "盈星": "沙田",
-  "福祥": "嘉二",
-  "萬永": "光一",
-  "運裕": "沙田",
-  "運裕通": "沙田",
-  "金山": "其士",
-  "金發": "金發",
-  "領先": "沙田",
-};
-
-// name, item code, supplier, and (only when it differs from the supplier's usual) a warehouse override
-const REAL_ITEMS_RAW = [
-  { name: "正肋排粒", itemCode: "10612", supplier: "金發" },
-  { name: "20lbs腩排粒", itemCode: "1061", supplier: "金發" },
-  { name: "牛冧粒", itemCode: "", supplier: "金發" },
-  { name: "草肚粒", itemCode: "", supplier: "金發" },
-  { name: "雞肉串", itemCode: "3022", supplier: "康天" },
-  { name: "30磅正裝金妹火腿腸", itemCode: "6001", supplier: "四洲" },
-  { name: "小紅腸", itemCode: "6007", supplier: "運裕" },
-  { name: "比目魚", itemCode: "4021", supplier: "海盛" },
-  { name: "13/15虎蝦", itemCode: "50381", supplier: "海盛" },
-  { name: "40包金妹芝士腸", itemCode: "60631", supplier: "四洲" },
-  { name: "40包金妹蜜糖腸", itemCode: "60731", supplier: "四洲" },
-  { name: "牛柳頭", itemCode: "2017", supplier: "形豐" },
-  { name: "布腸", itemCode: "6064", supplier: "運裕" },
-  { name: "10lbs雞肉粒", itemCode: "3025", supplier: "金發" },
-  { name: "10lbs赤肉粒", itemCode: "1073", supplier: "金發" },
-  { name: "10lbss肉眼絲", itemCode: "1087", supplier: "金發" },
-  { name: "肥牛片", itemCode: "2041", supplier: "金發" },
-  { name: "梅貴腸", itemCode: "", supplier: "運裕" },
-  { name: "什豆", itemCode: "7040", supplier: "運裕" },
-  { name: "青豆", itemCode: "7042", supplier: "大昌" },
-  { name: "粟米", itemCode: "7041", supplier: "運裕" },
-  { name: "喜得佳芝士腸", itemCode: "6100", supplier: "潤華" },
-  { name: "喜得佳司力腸", itemCode: "60651", supplier: "潤華" },
-  { name: "fassca豬軟骨", itemCode: "1024", supplier: "領先" },
-  { name: "GUIBON雞軟骨", itemCode: "3021", supplier: "新興城" },
-  { name: "小胸", itemCode: "3032", supplier: "五豐", warehouseOverride: "其士" },
-  { name: "大胸", itemCode: "3035", supplier: "漢陸" },
-  { name: "2磅金妹芝士腸", itemCode: "6063", supplier: "四洲" },
-  { name: "10KG金妹司華力腸", itemCode: "6065", supplier: "四洲" },
-  { name: "廚腸", itemCode: "60661", supplier: "大昌" },
-  { name: "美樂火腿", itemCode: "60371", supplier: "四洲" },
-  { name: "30磅大利火腿", itemCode: "60372", supplier: "四洲" },
-  { name: "20包金妹火腿", itemCode: "6002", supplier: "四洲" },
-  { name: "寶鵰腸", itemCode: "60662", supplier: "金發" },
-  { name: "火腎", itemCode: "3033", supplier: "恆盛" },
-  { name: "孖根", itemCode: "2008", supplier: "信希" },
-  { name: "aurora手", itemCode: "10972", supplier: "五豐", warehouseOverride: "其士" },
-  { name: "sadia20K手", itemCode: "", supplier: "五豐" },
-  { name: "Aurora豬肚", itemCode: "1026", supplier: "五豐", warehouseOverride: "其士" },
-  { name: "menu牛碎肉", itemCode: "20091", supplier: "金山" },
-  { name: "Dom牛腩", itemCode: "2006", supplier: "捷朗" },
-  { name: "竹絲雞", itemCode: "3015", supplier: "運裕" },
-  { name: "牛脷", itemCode: "2056", supplier: "金發" },
-  { name: "豬舌", itemCode: "1022", supplier: "形豐" },
-  { name: "牛罧", itemCode: "20471", supplier: "五豐" },
-  { name: "印度牛冧", itemCode: "20474", supplier: "信希" },
-  { name: "frimesa肉眼", itemCode: "1053", supplier: "信希" },
-  { name: "城字三肉", itemCode: "", supplier: "新興城" },
-  { name: "AURORA大腸", itemCode: "1009", supplier: "五豐", warehouseOverride: "其士" },
-  { name: "sadia大腸", itemCode: "1059", supplier: "佳寶" },
-  { name: "dalia大腸", itemCode: "", supplier: "金山" },
-  { name: "梅肉", itemCode: "1062", supplier: "五豐" },
-  { name: "腩排條", itemCode: "", supplier: "五豐", warehouseOverride: "其士" },
-  { name: "烏克蘭中翼", itemCode: "30464", supplier: "康利" },
-  { name: "雞腎仔", itemCode: "3082", supplier: "金山" },
-  { name: "日本翼尖", itemCode: "3028", supplier: "捷朗" },
-  { name: "RICO中翼", itemCode: "30463", supplier: "捷朗" },
-  { name: "GUIBON中翼", itemCode: "30467", supplier: "新興城" },
-  { name: "AURORA25k肋排", itemCode: "10611", supplier: "新興城" },
-  { name: "40lbs 牛罧片", itemCode: "2057", supplier: "金發" },
-  { name: "5lbs梅肉片", itemCode: "1031", supplier: "金發" },
-  { name: "frimesa肋排", itemCode: "10611", supplier: "領先" },
-  { name: "大白蛋", itemCode: "6087", supplier: "湖記" },
-  { name: "40lbs 碎牛罧片", itemCode: "20571", supplier: "金發" },
-  { name: "大陸四肉", itemCode: "1030", supplier: "五豐" },
-  { name: "背骨gobarto", itemCode: "1055", supplier: "新興城", warehouseOverride: "光一" },
-  { name: "切IBP美國豬肉眼", itemCode: "1034", supplier: "金發" },
-  { name: "成IBP美國豬肉眼", itemCode: "1034", supplier: "金發" },
-  { name: "大利煙片", itemCode: "70083", supplier: "四洲" },
-  { name: "金妹煙片", itemCode: "70084", supplier: "四洲" },
-  { name: "喜得佳煙片", itemCode: "70081", supplier: "潤華" },
-  { name: "500G金妹芝士腸", itemCode: "6004", supplier: "四洲" },
-  { name: "蟹柳", itemCode: "6075", supplier: "海發" },
-  { name: "蟹柳棒", itemCode: "60755", supplier: "海發" },
-  { name: "生鴨胸", itemCode: "8010", supplier: "五豐" },
-  { name: "豬尾", itemCode: "1022", supplier: "信希" },
-  { name: "海錦", itemCode: "5057", supplier: "福祥" },
-  { name: "早古原味腸", itemCode: "6108", supplier: "康天" },
-  { name: "早古黑椒腸", itemCode: "61081", supplier: "康天" },
-  { name: "薯仔餅", itemCode: "7044", supplier: "威信" },
-  { name: "鮑片", itemCode: "5008", supplier: "海盛" },
-  { name: "蟹鉗", itemCode: "5037", supplier: "信德" },
-  { name: "原味薯角", itemCode: "7063", supplier: "大昌" },
-  { name: "薯仔格", itemCode: "7015", supplier: "泰興" },
-  { name: "白飯魚", itemCode: "4046", supplier: "海富寶" },
-  { name: "粉絲春卷", itemCode: "70561", supplier: "偉森" },
-  { name: "10/15帶子", itemCode: "50093", supplier: "金發" },
-  { name: "6kg 雞絲", itemCode: "3055", supplier: "金發" },
-  { name: "2kg 雞絲", itemCode: "3055", supplier: "金發" },
-  { name: "10lbs切西冷", itemCode: "20103", supplier: "金發" },
-  { name: "10lbs腩片", itemCode: "10861", supplier: "金發" },
-  { name: "蛽肉", itemCode: "5019", supplier: "海盛" },
-  { name: "大頭蝦", itemCode: "5046", supplier: "嘉明" },
-  { name: "細扎肉", itemCode: "7001", supplier: "偉森" },
-  { name: "大扎肉", itemCode: "7037", supplier: "偉森" },
-  { name: "IQF 31/40 蝦仁", itemCode: "5058", supplier: "海盛" },
-  { name: "鴨舌", itemCode: "8008", supplier: "浩新" },
-  { name: "魷魚花", itemCode: "", supplier: "海富寶" },
-  { name: "魷魚圈", itemCode: "", supplier: "海富寶" },
-  { name: "煙鴨胸", itemCode: "8009", supplier: "五豐" },
-  { name: "軟殼蟹", itemCode: "5039", supplier: "嘉明" },
-  { name: "秋刀魚", itemCode: "4009", supplier: "佳寶" },
-  { name: "炸帶子", itemCode: "6011", supplier: "信德" },
-  { name: "炸蝦", itemCode: "4041", supplier: "佳寶" },
-  { name: "IBP梅肉", itemCode: "", supplier: "海富" },
-  { name: "仿趐", itemCode: "5075", supplier: "四興" },
-  { name: "鯖魚柳", itemCode: "40011", supplier: "海盛" },
-  { name: "蟹肉", itemCode: "50", supplier: "金發" },
-  { name: "龍蝦丸", itemCode: "60421", supplier: "海欣" },
-  { name: "蟹子丸", itemCode: "6076", supplier: "海欣" },
-  { name: "芝心包", itemCode: "6094", supplier: "海欣" },
-  { name: "海膽丸", itemCode: "6096", supplier: "海欣" },
-  { name: "大包獅子狍", itemCode: "7047", supplier: "海發" },
-  { name: "珍寶大白", itemCode: "60873", supplier: "金發" },
-  { name: "北海蟹柳", itemCode: "60751", supplier: "捷朗" },
-  { name: "仙爪", itemCode: "7007", supplier: "合群" },
-  { name: "SILVERFERN羊架", itemCode: "8020", supplier: "百加" },
-  { name: "鵝腸", itemCode: "80161", supplier: "康天" },
-  { name: "鵝翼", itemCode: "8018", supplier: "康利" },
-  { name: "桂花蚌(2LBS)", itemCode: "5014", supplier: "德盛", warehouseOverride: "沙田" },
-  { name: "珊瑚蚌(2LBS)", itemCode: "5061", supplier: "國恆" },
-  { name: "26/30日本帶子黃膠", itemCode: "5011", supplier: "海盛" },
-  { name: "半殼青口", itemCode: "5018", supplier: "海盛" },
-  { name: "青口肉", itemCode: "5019", supplier: "海盛" },
-  { name: "雞子", itemCode: "3011", supplier: "康利" },
-  { name: "芝士碎", itemCode: "7066", supplier: "大昌" },
-  { name: "咖哩角", itemCode: "7054", supplier: "運裕" },
-  { name: "柱裝羊卷肉", itemCode: "80332", supplier: "五豐" },
-  { name: "1/2墨魚柳", itemCode: "4024", supplier: "康利" },
-  { name: "4條裝大墨魚", itemCode: "4045", supplier: "海盛" },
-  { name: "青衣柳", itemCode: "4013", supplier: "海富寶" },
-  { name: "12.5磅X4罐金妹火腿", itemCode: "6032", supplier: "四洲" },
-  { name: "Miratorg骨腩", itemCode: "10281", supplier: "信二", warehouseOverride: "沙田" },
-  { name: "FRICASA骨腩", itemCode: "1028", supplier: "捷朗" },
-  { name: "250雞扒", itemCode: "30241", supplier: "五豐" },
-  { name: "20kg 豬扒片", itemCode: "1072", supplier: "金發" },
-  { name: "40lbs 豬扒條", itemCode: "10721", supplier: "金發" },
-  { name: "40lbs 牛腩粒", itemCode: "2006", supplier: "金發" },
-  { name: "40lbs去皮雞粒", itemCode: "30794", supplier: "金發" },
-  { name: "40lbs正肋粒", itemCode: "", supplier: "金發" },
-  { name: "EX肥牛86K", itemCode: "2041", supplier: "金發" },
-  { name: "肥牛86R", itemCode: "2041", supplier: "萬永" },
-  { name: "大炸蛋", itemCode: "", supplier: "永富" },
-  { name: "Miratorg挑骨腩", itemCode: "1086", supplier: "五豐" },
-  { name: "FRIMESA梅肉", itemCode: "1062", supplier: "五豐" },
-  { name: "SKIBA肥肉", itemCode: "1048", supplier: "李樹", warehouseOverride: "沙田" },
-  { name: "AURORA全翼", itemCode: "3081", supplier: "大昌" },
-  { name: "AURORA雞髀", itemCode: "3047", supplier: "大昌" },
-  { name: "24/26比", itemCode: "3049", supplier: "五豐" },
-  { name: "26/28比", itemCode: "3017", supplier: "五豐" },
-  { name: "FRIATO雞腳", itemCode: "3044", supplier: "新興城" },
-  { name: "505腩仔", itemCode: "10863", supplier: "捷朗" },
-  { name: "220+魷頭", itemCode: "4011", supplier: "偉發" },
-  { name: "印度牛腩", itemCode: "20062", supplier: "其士" },
-  { name: "Mataboi牛尾", itemCode: "2054", supplier: "金山" },
-  { name: "agra牛尾", itemCode: "2054", supplier: "領先" },
-  { name: "PRIME西冷", itemCode: "20102", supplier: "金山" },
-  { name: "FRIMESA豬扒", itemCode: "1072", supplier: "領先" },
-  { name: "ALIBEM頸骨", itemCode: "1056", supplier: "領先" },
-  { name: "OVATION羊卷肉", itemCode: "80333", supplier: "金發" },
-  { name: "DUNBIA牛仔骨", itemCode: "2042", supplier: "捷朗" },
-  { name: "西冷", itemCode: "20101", supplier: "形豐" },
-  { name: "牛筒骨", itemCode: "", supplier: "李樹" },
-  { name: "PRIME牛小排", itemCode: "2071", supplier: "光一" },
-  { name: "1.5K鴨仔", itemCode: "8042", supplier: "漢陸" },
-  { name: "肉青", itemCode: "1069", supplier: "五豐" },
-  { name: "olymel豬踭", itemCode: "1010", supplier: "信希" },
-  { name: "雞比肉", itemCode: "3026", supplier: "新興城", warehouseOverride: "光一" },
-  { name: "下比", itemCode: "3010", supplier: "五豐" },
-  { name: "雞翼槌", itemCode: "3030", supplier: "新興城" },
-  { name: "去皮比肉", itemCode: "3079", supplier: "五豐" },
-  { name: "豬仔骨", itemCode: "1013", supplier: "湖記" },
-  { name: "春卷", itemCode: "7056", supplier: "運裕" },
-  { name: "喜得佳牛筋丸", itemCode: "60407", supplier: "潤華" },
-  { name: "海參", itemCode: "4012", supplier: "大昌" },
-  { name: "多春魚", itemCode: "4008", supplier: "信德" },
-  { name: "Simplot 曲條", itemCode: "7043", supplier: "大昌" },
-  { name: "22/30魚柳", itemCode: "4007", supplier: "五豐" },
-  { name: "2230魚柳（黃帶）", itemCode: "40073", supplier: "新興城", warehouseOverride: "光一" },
-  { name: "EXCEL牛仔骨", itemCode: "2045", supplier: "形豐" },
-  { name: "300+雞扒", itemCode: "30243", supplier: "五豐" },
-  { name: "18/20比", itemCode: "3019", supplier: "運裕通" },
-  { name: "牛骨髓", itemCode: "2050", supplier: "沙田" },
-  { name: "無骨羊比", itemCode: "", supplier: "金山" },
-  { name: "900雞", itemCode: "30134", supplier: "恆盛" },
-  { name: "1100雞", itemCode: "", supplier: "金發" },
-  { name: "金展", itemCode: "2046", supplier: "金山" },
-  { name: "鵝腳", itemCode: "8017", supplier: "有成" },
-  { name: "牛肋條", itemCode: "2044", supplier: "五豐", warehouseOverride: "其士" },
-  { name: "草肚", itemCode: "20141", supplier: "金山" },
-  { name: "鯖魚", itemCode: "4001", supplier: "佳寶" },
-  { name: "鳳爪", itemCode: "3023", supplier: "漢陸" },
-  { name: "牛柳", itemCode: "2016", supplier: "金山" },
-  { name: "雞殼", itemCode: "3001", supplier: "漢陸", warehouseOverride: "光一" },
-  { name: "漢堡", itemCode: "70613", supplier: "大昌" },
-  { name: "71/90餅蝦", itemCode: "5056", supplier: "海盛" },
-  { name: "31/40餅蝦", itemCode: "5003", supplier: "海盛" },
-  { name: "26/30餅蝦", itemCode: "5004", supplier: "形豐" },
-  { name: "16/20餅蝦", itemCode: "5009", supplier: "海盛", warehouseOverride: "光一" },
-  { name: "100/200餅蝦", itemCode: "5022", supplier: "海盛" },
-  { name: "21/25鳳尾蝦", itemCode: "50331", supplier: "海盛", warehouseOverride: "光一" },
-  { name: "26/30鳳尾蝦", itemCode: "", supplier: "海盛" },
-  { name: "31/40鳳尾蝦", itemCode: "5033", supplier: "海盛" },
-  { name: "12/17魚柳", itemCode: "4006", supplier: "形豐" },
-  { name: "skiba筒骨", itemCode: "1060", supplier: "李樹", warehouseOverride: "沙田" },
-  { name: "120/150珍珠帶子", itemCode: "50094", supplier: "海盛" },
-  { name: "帆立貝26/30V綠膠", itemCode: "50095", supplier: "海盛" },
-  { name: "61/70蝦", itemCode: "50072", supplier: "嘉明" },
-  { name: "印度51/60蝦", itemCode: "50062", supplier: "國恆" },
-  { name: "印度71/90蝦", itemCode: "50562", supplier: "國恆" },
-  { name: "21/25鮮魷", itemCode: "40271", supplier: "福祥" },
-  { name: "16/20鮮魷", itemCode: "4027", supplier: "福祥" },
-  { name: "印尼26/30蝦", itemCode: "5005", supplier: "嘉明" },
-  { name: "吊筒", itemCode: "", supplier: "福祥" },
-  { name: "肩胛肥牛", itemCode: "204112", supplier: "金發" },
-  { name: "6X12 Prime", itemCode: "204114", supplier: "金山" },
-  { name: "national CAB牛小排", itemCode: "2070", supplier: "形豐" },
-  { name: "sadia大腸", itemCode: "10591", supplier: "佳寶" },
-  { name: "alibem豬耳", itemCode: "1011", supplier: "盈星" },
-  { name: "金肚masterboi", itemCode: "2013", supplier: "新興城" },
-  { name: "澳洲金肚", itemCode: "20132", supplier: "浩新" },
-  { name: "12-19K羊", itemCode: "8032", supplier: "新柏林" },
-  { name: "網裝羊卷肉", itemCode: "80331", supplier: "浩新" },
-  { name: "法式羊架", itemCode: "80201", supplier: "浩新" },
-  { name: "羊腩", itemCode: "8047", supplier: "澤興" },
-  { name: "SIMPLOT直條", itemCode: "7045", supplier: "大昌" },
-  { name: "泰國全手", itemCode: "1098", supplier: "浩新" },
-  { name: "鴨比", itemCode: "8015", supplier: "五豐" },
-  { name: "貢丸", itemCode: "6041", supplier: "德盛", warehouseOverride: "嘉一" },
-  { name: "泰中翼", itemCode: "30452", supplier: "信二" },
-  { name: "牛柏葉coto", itemCode: "2015", supplier: "李樹" },
-  { name: "ifssa牛柏葉", itemCode: "", supplier: "金山" },
-  { name: "龍池貢丸", itemCode: "60413", supplier: "德盛" },
-  { name: "三角薯", itemCode: "7004", supplier: "大昌" },
-  { name: "麥樂雞", itemCode: "7052", supplier: "金發" },
-  { name: "凍雞", itemCode: "30131", supplier: "澤興" },
-  { name: "4條裝金妹司華力", itemCode: "60652", supplier: "四洲" },
-  { name: "2p 金妹蜜糖腸", itemCode: "6073", supplier: "四洲" },
-  { name: "日式黑椒腸", itemCode: "60668", supplier: "康天" },
-  { name: "454G金妹蜜糖腸", itemCode: "60732", supplier: "四洲" },
-  { name: "454G金妹芝士腸", itemCode: "60632", supplier: "四洲" },
-  { name: "IBPCAB KARUBI", itemCode: "2041141", supplier: "信二" },
-  { name: "Excel PRIME 牛板楗", itemCode: "20021", supplier: "信二", warehouseOverride: "其士" },
-  { name: "IBP PRIMECHUCKROLL 牛肉卷", itemCode: "", supplier: "大昌" },
-  { name: "JONES漢堡", itemCode: "", supplier: "泰興" },
-  { name: "辣薯角", itemCode: "70631", supplier: "泰興" },
-  { name: "喜得佳熱狗腸", itemCode: "", supplier: "潤華" },
-  { name: "魷翼", itemCode: "4024", supplier: "信德" },
-  { name: "比利時粗直條", itemCode: "", supplier: "捷朗" },
-];
-
-function generateRealData() {
-  const INTERNAL_ACCOUNT_SUPPLIERS = ['金發', '沙田', '光一', '其士'];
-
-  const suppliers = REAL_SUPPLIER_NAMES.map((name) => ({
-    id: uid(),
-    name,
-    // 沙田/光一/其士 route to the internal record-keeping contact; 金發 (your own warehouse)
-    // is left blank for you to fill in its manager's number — until then it uses WhatsApp's picker.
-    whatsapp: (INTERNAL_ACCOUNT_SUPPLIERS.includes(name) && name !== '金發') ? INTERNAL_PERSON_WHATSAPP : '',
-    defaultWarehouseId: '', // filled in below once warehouse ids exist
-    isInternalAccount: INTERNAL_ACCOUNT_SUPPLIERS.includes(name),
-  }));
-  const supplierByName = Object.fromEntries(suppliers.map((s) => [s.name, s]));
-
-  const warehouses = REAL_WAREHOUSE_NAMES.map((name) => ({ id: uid(), name }));
-  const warehouseByName = Object.fromEntries(warehouses.map((w) => [w.name, w]));
-
-  suppliers.forEach((s) => {
-    const whName = REAL_SUPPLIER_DEFAULT_WAREHOUSE[s.name];
-    s.defaultWarehouseId = whName ? (warehouseByName[whName]?.id || '') : '';
-  });
-
-  const items = REAL_ITEMS_RAW.map((raw) => {
-    const supplier = supplierByName[raw.supplier];
-    const item = {
-      id: uid(),
-      name: raw.name,
-      itemCode: raw.itemCode || '',
-      supplierId: supplier ? supplier.id : '',
-      unit: '件',
-      par: 0,
-      stock: 0,
-      tags: [],
-      parByDay: {},
-    };
-    if (raw.warehouseOverride) {
-      item.defaultWarehouseId = warehouseByName[raw.warehouseOverride]?.id || '';
-    }
-    return item;
-  });
-
-  return { suppliers, items, orders: [], warehouses };
-}
 
 
 /* ============================================================
@@ -761,7 +348,6 @@ const state = {
   modal: null,               // { type: 'item'|'supplier'|'warehouse', mode:'new'|'edit', data, insertAfterId }
   editingPickupFor: null,    // cart line id
   editingSupplierFor: null,  // cart line id
-  scrollPositions: {},       // tab -> last scroll position (session-only, so returning to a tab picks up where you left off)
 };
 
 function persist(key) {
@@ -986,15 +572,47 @@ function deleteWarehouse(id) {
   closeModal();
 }
 
-function loadRealData() {
-  const data = generateRealData();
-  updateSuppliers(data.suppliers);
-  updateItems(data.items);
-  updateCart([]);
-  updateOrders(data.orders);
-  updateWarehouses(data.warehouses);
-  closeModal();
-  renderTab();
+// Import/export: reads/writes a plain JSON file chosen from the device itself.
+// Nothing here is baked into the app's code, so no business data is ever public.
+function exportDataToFile() {
+  const data = {
+    suppliers: state.suppliers,
+    items: state.items,
+    warehouses: state.warehouses,
+    orders: state.orders,
+    cart: state.cart,
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `stock-orders-backup-${todayStr()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  showToast('Backup file downloaded.');
+}
+
+function importDataFromFile(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const data = JSON.parse(e.target.result);
+      if (!data || typeof data !== 'object') throw new Error('bad format');
+      if (Array.isArray(data.suppliers)) updateSuppliers(data.suppliers);
+      if (Array.isArray(data.items)) updateItems(data.items);
+      if (Array.isArray(data.warehouses)) updateWarehouses(data.warehouses);
+      if (Array.isArray(data.orders)) updateOrders(data.orders);
+      if (Array.isArray(data.cart)) updateCart(data.cart);
+      renderTab();
+      showToast('Data imported.');
+    } catch (err) {
+      showToast("Couldn't read that file — is it the right export?");
+    }
+  };
+  reader.readAsText(file);
 }
 
 
@@ -1009,14 +627,10 @@ const TABS = [
 ];
 
 function setTab(tab) {
-  // Remember exactly where we were on the tab we're leaving...
-  state.scrollPositions[state.tab] = window.scrollY;
   state.tab = tab;
   renderTab();
   renderNav();
-  // ...and jump back to that spot if we've visited this tab before this session (else top, as before).
-  const restoreY = state.scrollPositions[tab] || 0;
-  requestAnimationFrame(() => window.scrollTo(0, restoreY));
+  window.scrollTo(0, 0);
 }
 
 function renderNav() {
@@ -1475,7 +1089,12 @@ function renderSuppliersTab() {
   return `
     <div>
       <button data-open-supplier-modal class="btn btn-primary mb2" style="display:flex;align-items:center;gap:6px;">${icon('plus', 16, '#fff')} Add supplier</button>
-      <button data-load-real-data class="btn mb2" style="background:var(--green);color:var(--forest);border:1px solid #B7CFC9;font-size:13px;">Load data from your ORDERING spreadsheet</button>
+      <div class="row gap2 mb2">
+        <button data-open-import class="btn flex1" style="background:var(--green);color:var(--forest);border:1px solid #B7CFC9;font-size:13px;">Import data</button>
+        <button data-export-data class="btn flex1" style="background:var(--tint);color:var(--muted);border:1px solid var(--border);font-size:13px;">Export backup</button>
+      </div>
+      <input type="file" id="importFileInput" accept="application/json,.json" style="display:none;">
+      <p class="text-xs faint mb2">Import reads a file straight from your phone — nothing is sent anywhere. Export saves a backup file you can keep privately (e.g. in Files or Notes).</p>
 
       <button data-toggle-suppliers class="row-between" style="width:100%;margin-bottom:8px;">
         <span class="section-label" style="margin-bottom:0;">Suppliers (${state.suppliers.length})</span>
@@ -1784,10 +1403,13 @@ function onMainClick(e) {
 
   if (btn.hasAttribute('data-open-supplier-modal')) { openSupplierModal('new', null); return; }
   if (btn.dataset.editSupplierModal) { openSupplierModal('edit', state.suppliers.find((s) => s.id === btn.dataset.editSupplierModal)); return; }
-  if (btn.hasAttribute('data-load-real-data')) {
-    if (confirm(`This will replace your current suppliers, stock items, warehouses, cart and pending orders with data imported from your ORDERING spreadsheet. This can't be undone. Continue?`)) loadRealData();
+  if (btn.hasAttribute('data-open-import')) {
+    if (confirm(`Importing will replace your current suppliers, stock items, warehouses, cart and pending orders with whatever is in the chosen file. This can't be undone. Continue?`)) {
+      document.getElementById('importFileInput').click();
+    }
     return;
   }
+  if (btn.hasAttribute('data-export-data')) { exportDataToFile(); return; }
   if (btn.hasAttribute('data-toggle-suppliers')) { state.showSuppliers = !state.showSuppliers; renderTab(); return; }
   if (btn.hasAttribute('data-toggle-warehouses')) { state.showWarehouses = !state.showWarehouses; renderTab(); return; }
   if (btn.hasAttribute('data-open-warehouse-modal')) { openWarehouseModal('new', null); return; }
@@ -1804,6 +1426,12 @@ function onMainInput(e) {
 
 function onMainChange(e) {
   const t = e.target;
+  if (t.id === 'importFileInput') {
+    const file = t.files && t.files[0];
+    importDataFromFile(file);
+    t.value = '';
+    return;
+  }
   if (t.id === 'orderDateInput') {
     if (t.value && t.value >= todayStr()) { state.orderDate = t.value; renderTab(); }
     return;
