@@ -865,7 +865,7 @@ function renderPickupLocationsSummary() {
   state.cart.forEach((c) => {
     const found = c.pickupWarehouseId && state.warehouses.find((w) => w.id === c.pickupWarehouseId);
     const label = found ? found.name : 'Not set';
-    counts[label] = (counts[label] || 0) + 1;
+    counts[label] = (counts[label] || 0) + c.qty;
   });
   return `
     <section class="section">
