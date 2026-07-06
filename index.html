@@ -4,12 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <title>Stock & Orders</title>
-<link rel="manifest" href="manifest.json">
-<meta name="theme-color" content="#18443D">
-<link rel="apple-touch-icon" href="icon-192.png">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Stock & Orders">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
 <style>
@@ -767,6 +761,7 @@ const state = {
   modal: null,               // { type: 'item'|'supplier'|'warehouse', mode:'new'|'edit', data, insertAfterId }
   editingPickupFor: null,    // cart line id
   editingSupplierFor: null,  // cart line id
+  scrollPositions: {},       // tab -> last scroll position (session-only, so returning to a tab picks up where you left off)
 };
 
 function persist(key) {
@@ -1014,10 +1009,14 @@ const TABS = [
 ];
 
 function setTab(tab) {
+  // Remember exactly where we were on the tab we're leaving...
+  state.scrollPositions[state.tab] = window.scrollY;
   state.tab = tab;
   renderTab();
   renderNav();
-  window.scrollTo(0, 0);
+  // ...and jump back to that spot if we've visited this tab before this session (else top, as before).
+  const restoreY = state.scrollPositions[tab] || 0;
+  requestAnimationFrame(() => window.scrollTo(0, restoreY));
 }
 
 function renderNav() {
@@ -1914,11 +1913,6 @@ function onModalChange(e) {
 initEventListeners();
 setTab('today');
 
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('sw.js').catch((e) => console.error('sw register failed', e));
-  });
-}
 </script>
 </body>
 </html>
