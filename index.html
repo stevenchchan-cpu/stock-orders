@@ -713,6 +713,7 @@ function renderOrdersTab() {
 
   const list = state.items
     .map((it, idx) => ({ item: it, index: idx + 1 }))
+    .filter((x) => !x.item.inactive)
     .filter((x) => !state.filterValue || !activeFilterDef || activeFilterDef.matches(x.item, state.filterValue))
     .filter((x) => !state.onlyOrderedForDate || ((incomingBreakdown[x.item.id] && incomingBreakdown[x.item.id].exact) || 0) > 0);
 
@@ -999,8 +1000,10 @@ function renderStockTab() {
   const rows = filtered.map(({ item, originalIndex: idx }) => {
     const supplier = state.suppliers.find((s) => s.id === item.supplierId);
     const pickupWarehouse = state.warehouses.find((w) => w.id === effectivePickupWarehouseId(item, supplier));
+    const supplierNameLower = (supplier ? supplier.name : '').toLowerCase();
+    const tagsLower = (item.tags || []).join(' ').toLowerCase();
     return `
-      <div class="card row" style="gap:8px;padding:12px;" data-stock-row data-name="${escapeHtml(item.name.toLowerCase())}" data-code="${escapeHtml((item.itemCode || '').toLowerCase())}">
+      <div class="card row" style="gap:8px;padding:12px;opacity:${item.inactive ? '.55' : '1'};" data-stock-row data-name="${escapeHtml(item.name.toLowerCase())}" data-code="${escapeHtml((item.itemCode || '').toLowerCase())}" data-supplier="${escapeHtml(supplierNameLower)}" data-tags="${escapeHtml(tagsLower)}">
         <div style="display:flex;flex-direction:column;flex-shrink:0;">
           <button data-move-item="${item.id}:up" ${idx === 0 ? 'disabled' : ''} style="opacity:${idx === 0 ? .3 : 1};">${icon('chevronUp', 16, 'var(--muted)')}</button>
           <button data-move-item="${item.id}:down" ${idx === state.items.length - 1 ? 'disabled' : ''} style="opacity:${idx === state.items.length - 1 ? .3 : 1};">${icon('chevronDown', 16, 'var(--muted)')}</button>
@@ -1009,7 +1012,7 @@ function renderStockTab() {
           <span class="index-badge">#${idx + 1}</span>
           <div class="flex1" style="min-width:0;">
             <div class="text-sm truncate" style="font-weight:500;color:var(--ink);">
-              ${escapeHtml(item.name)}${item.itemCode ? ` <span class="font-mono text-xs faint">${escapeHtml(item.itemCode)}</span>` : ''}
+              ${escapeHtml(item.name)}${item.itemCode ? ` <span class="font-mono text-xs faint">${escapeHtml(item.itemCode)}</span>` : ''}${item.inactive ? ` <span class="tag" style="background:var(--amber-bg);color:var(--amber-text);">Inactive</span>` : ''}
             </div>
             <div class="text-xs truncate muted">${escapeHtml(supplier ? supplier.name : 'No supplier')} · stock ${item.stock}${item.unit ? ' ' + escapeHtml(item.unit) : ''} · par ${item.par}${item.parByDay && Object.keys(item.parByDay).length ? ' · varies by day' : ''}</div>
             <div class="text-xs truncate" style="color:${item.defaultWarehouseId ? 'var(--amber-strong)' : 'var(--muted)'};">pickup: ${escapeHtml(pickupWarehouse ? pickupWarehouse.name : 'varies')}${item.defaultWarehouseId ? ' (item-specific)' : ''}</div>
@@ -1023,7 +1026,7 @@ function renderStockTab() {
     <div>
       <button data-open-item-modal class="btn btn-primary mb2" style="display:flex;align-items:center;gap:6px;">${icon('plus', 16, '#fff')} Add stock item</button>
       <p class="text-xs faint" style="margin-bottom:12px;">Order items to match your stockroom layout. Use the arrows to reorder, or "insert here" to slot a new item into place.</p>
-      <input type="search" id="stockSearch" placeholder="Search items or item code…" value="${escapeHtml(state.stockSearch)}" class="mb2">
+      <input type="search" id="stockSearch" placeholder="Search items, item code, supplier or tag…" value="${escapeHtml(state.stockSearch)}" class="mb2">
       ${state.items.length === 0
         ? renderEmptyState('No items yet', 'Add the products you regularly order from your suppliers.')
         : `<p id="stockNoMatches" class="text-sm muted hidden" style="text-align:center;padding:24px 0;">No items match your search.</p>
@@ -1035,7 +1038,11 @@ function filterStockRows() {
   const q = state.stockSearch.trim().toLowerCase();
   let anyVisible = false;
   document.querySelectorAll('[data-stock-row]').forEach((el) => {
-    const match = !q || el.dataset.name.includes(q) || el.dataset.code.includes(q);
+    const match = !q
+      || el.dataset.name.includes(q)
+      || el.dataset.code.includes(q)
+      || (el.dataset.supplier || '').includes(q)
+      || (el.dataset.tags || '').includes(q);
     el.classList.toggle('hidden', !match);
     if (match) anyVisible = true;
   });
@@ -1215,6 +1222,11 @@ function renderItemForm(m) {
     </label>
     ${d.varyByDay ? `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:16px;">${dayInputs}</div>` : ''}
     <p class="hint" style="margin-top:${d.varyByDay ? '0' : '-8px'};">${d.varyByDay ? 'Leave a day blank to fall back to the default par.' : "Par level is the amount you want on hand — order suggestions are based on this, but you can always type your own order qty on the Orders screen."}</p>
+    <label class="row" style="gap:8px;margin-bottom:12px;cursor:pointer;">
+      <input type="checkbox" id="f_inactive" ${d.inactive ? 'checked' : ''}>
+      <span class="text-sm">Inactive item</span>
+    </label>
+    <p class="hint" style="margin-top:-8px;">Inactive items are hidden from the Orders tab (so you won't be asked to order them), but they stay in your Stock list. Untick to bring an item back into use.</p>
     ${!canSave ? `<p class="warn-hint">${!d.name.trim() ? 'Enter an item name to save.' : 'Choose a supplier to save.'}</p>` : ''}
     <div class="row gap2 mt2">
       <button data-close-modal class="btn" style="background:var(--tint);color:var(--muted);width:auto;padding:10px 16px;">Cancel</button>
@@ -1311,10 +1323,10 @@ function openItemModal(mode, item, insertAfterId) {
     unit: item.unit || '件', par: item.par ?? 0, stock: item.stock ?? 0,
     varyByDay: !!(item.parByDay && Object.keys(item.parByDay).length),
     parByDay: item.parByDay || {}, tagsText: (item.tags || []).join(', '),
-    defaultWarehouseId: item.defaultWarehouseId || '',
+    defaultWarehouseId: item.defaultWarehouseId || '', inactive: !!item.inactive,
   } : {
     name: '', itemCode: '', supplierId: (state.suppliers[0] && state.suppliers[0].id) || '',
-    unit: '件', par: 0, stock: 0, varyByDay: false, parByDay: {}, tagsText: '', defaultWarehouseId: '',
+    unit: '件', par: 0, stock: 0, varyByDay: false, parByDay: {}, tagsText: '', defaultWarehouseId: '', inactive: false,
   };
   openModal({ type: 'item', mode, data: item, insertAfterId: insertAfterId || null, draft });
 }
@@ -1479,7 +1491,7 @@ function onModalClick(e) {
       id: state.modal.data ? state.modal.data.id : undefined,
       name: d.name.trim(), itemCode: d.itemCode.trim(), supplierId: d.supplierId,
       unit: d.unit.trim(), par: d.par, stock: d.stock, parByDay: cleanParByDay, tags,
-      defaultWarehouseId: d.defaultWarehouseId, insertAfterId: state.modal.insertAfterId,
+      defaultWarehouseId: d.defaultWarehouseId, inactive: !!d.inactive, insertAfterId: state.modal.insertAfterId,
     });
     return;
   }
