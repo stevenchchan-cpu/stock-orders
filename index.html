@@ -1526,7 +1526,23 @@ function onModalInput(e) {
     const d = state.modal.draft;
     const key = t.id.slice(2);
     if (key in d) d[key] = t.type === 'checkbox' ? t.checked : t.value;
+    updateModalSaveButton();
   }
+}
+
+// Re-checks whether the Save button should be enabled as the user types, without a full
+// re-render (a full re-render here would kick the user out of the text field mid-typing).
+function updateModalSaveButton() {
+  if (!state.modal) return;
+  const d = state.modal.draft;
+  let canSave = false;
+  let selector = '';
+  if (state.modal.type === 'item') { canSave = !!(d.name && d.name.trim() && d.supplierId); selector = '[data-save-item]'; }
+  else if (state.modal.type === 'supplier') { canSave = !!(d.name && d.name.trim()); selector = '[data-save-supplier]'; }
+  else if (state.modal.type === 'warehouse') { canSave = !!(d.name && d.name.trim()); selector = '[data-save-warehouse]'; }
+  if (!selector) return;
+  const btn = document.querySelector(selector);
+  if (btn) btn.disabled = !canSave;
 }
 
 function onModalChange(e) {
