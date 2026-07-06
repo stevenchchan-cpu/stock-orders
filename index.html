@@ -21,6 +21,7 @@
   .font-mono { font-family:'JetBrains Mono',monospace; }
   button { font-family:inherit; cursor:pointer; border:none; background:none; color:inherit; -webkit-appearance:none; }
   input,select,textarea { font-family:inherit; font-size:15px; -webkit-appearance:none; appearance:none; }
+  input[type=checkbox] { -webkit-appearance:auto; appearance:auto; width:18px; height:18px; accent-color:var(--forest); flex-shrink:0; }
   a { color:inherit; }
   .hidden { display:none !important; }
 
@@ -865,7 +866,7 @@ function renderPickupLocationsSummary() {
   state.cart.forEach((c) => {
     const found = c.pickupWarehouseId && state.warehouses.find((w) => w.id === c.pickupWarehouseId);
     const label = found ? found.name : 'Not set';
-    counts[label] = (counts[label] || 0) + c.qty;
+    counts[label] = (counts[label] || 0) + 1;
   });
   return `
     <section class="section">
@@ -1526,23 +1527,7 @@ function onModalInput(e) {
     const d = state.modal.draft;
     const key = t.id.slice(2);
     if (key in d) d[key] = t.type === 'checkbox' ? t.checked : t.value;
-    updateModalSaveButton();
   }
-}
-
-// Re-checks whether the Save button should be enabled as the user types, without a full
-// re-render (a full re-render here would kick the user out of the text field mid-typing).
-function updateModalSaveButton() {
-  if (!state.modal) return;
-  const d = state.modal.draft;
-  let canSave = false;
-  let selector = '';
-  if (state.modal.type === 'item') { canSave = !!(d.name && d.name.trim() && d.supplierId); selector = '[data-save-item]'; }
-  else if (state.modal.type === 'supplier') { canSave = !!(d.name && d.name.trim()); selector = '[data-save-supplier]'; }
-  else if (state.modal.type === 'warehouse') { canSave = !!(d.name && d.name.trim()); selector = '[data-save-warehouse]'; }
-  if (!selector) return;
-  const btn = document.querySelector(selector);
-  if (btn) btn.disabled = !canSave;
 }
 
 function onModalChange(e) {
