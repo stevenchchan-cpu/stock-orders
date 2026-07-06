@@ -1,7 +1,7 @@
 // Bumping CACHE_NAME (e.g. to v3, v4...) forces phones to fetch a fresh copy
 // next time they have internet, otherwise they keep using the saved copy.
-const CACHE_NAME = 'stock-orders-v8'
-const FILES_TO_CACHE = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
+const CACHE_NAME = 'stock-orders-v9'
+const FILES_TO_CACHE = ['./', './index.html', './manifest.json', './icon-192b.png', './icon-512.png'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
