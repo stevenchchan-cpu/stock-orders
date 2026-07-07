@@ -1543,6 +1543,31 @@ function onModalInput(e) {
     const d = state.modal.draft;
     const key = t.id.slice(2);
     if (key in d) d[key] = t.type === 'checkbox' ? t.checked : t.value;
+    updateSaveButtonState();
+  }
+}
+
+/* Directly toggles the Save button (and its hint text, for items) to match the current draft,
+   without a full re-render — so the button un-greys the moment enough info is typed in. */
+function updateSaveButtonState() {
+  if (!state.modal) return;
+  const d = state.modal.draft;
+  const type = state.modal.type;
+  const modalRoot = document.getElementById('modalRoot');
+  let canSave = false;
+  let selector = '';
+  if (type === 'item') { canSave = !!(d.name && d.name.trim() && d.supplierId); selector = '[data-save-item]'; }
+  else if (type === 'supplier') { canSave = !!(d.name && d.name.trim()); selector = '[data-save-supplier]'; }
+  else if (type === 'warehouse') { canSave = !!(d.name && d.name.trim()); selector = '[data-save-warehouse]'; }
+  else return;
+  const btn = modalRoot.querySelector(selector);
+  if (btn) btn.disabled = !canSave;
+  if (type === 'item') {
+    const hint = modalRoot.querySelector('.warn-hint');
+    if (hint) {
+      hint.style.display = canSave ? 'none' : '';
+      if (!canSave) hint.textContent = (!d.name || !d.name.trim()) ? 'Enter an item name to save.' : 'Choose a supplier to save.';
+    }
   }
 }
 
