@@ -350,6 +350,7 @@ const state = {
   modal: null,               // { type: 'item'|'supplier'|'warehouse', mode:'new'|'edit', data, insertAfterId }
   editingPickupFor: null,    // cart line id
   editingSupplierFor: null,  // cart line id
+  scrollPositions: {},       // tab -> last scroll position (session-only, so returning to a tab picks up where you left off)
 };
 
 function persist(key) {
@@ -630,10 +631,14 @@ const TABS = [
 ];
 
 function setTab(tab) {
+  // Remember exactly where we were on the tab we're leaving...
+  state.scrollPositions[state.tab] = window.scrollY;
   state.tab = tab;
   renderTab();
   renderNav();
-  window.scrollTo(0, 0);
+  // ...and jump back to that spot if we've visited this tab before this session (else top, as before).
+  const restoreY = state.scrollPositions[tab] || 0;
+  requestAnimationFrame(() => window.scrollTo(0, restoreY));
 }
 
 function renderNav() {
