@@ -259,10 +259,10 @@ function buildMessage(supplierName, lines, dateStr, isAdditional, prefix) {
   }
   if (shopLines.length === 0) {
     // everything is going to your own warehouse
-    return `${dayWord}\n倉:\n${formatLines(warehouseLines)}`;
+    return `${dayWord}\n(葵):\n${formatLines(warehouseLines)}`;
   }
   // mixed order — keep the two destinations clearly separated so the driver isn't guessing
-  return `${dayWord}\n舖:\n${formatLines(shopLines)}\n\n倉:\n${formatLines(warehouseLines)}`;
+  return `${dayWord}\n舖:\n${formatLines(shopLines)}\n\n(葵):\n${formatLines(warehouseLines)}`;
 }
 
 async function sendOrShareMessage(phone, message, windowName) {
@@ -350,6 +350,7 @@ const state = {
   modal: null,               // { type: 'item'|'supplier'|'warehouse', mode:'new'|'edit', data, insertAfterId }
   editingPickupFor: null,    // cart line id
   editingSupplierFor: null,  // cart line id
+  revisingOrderId: null,     // order id currently open for post-send revision
   scrollPositions: {},       // tab -> last scroll position (session-only, so returning to a tab picks up where you left off)
 };
 
@@ -508,6 +509,33 @@ function cancelOrder(order) {
   });
   updateCart([...state.cart, ...restoredLines]);
   renderTab();
+}
+
+function setOrderLineQty(orderId, itemIndex, qty) {
+  if (!qty || qty <= 0) { removeOrderLine(orderId, itemIndex); return; }
+  updateOrders(state.orders.map((o) => {
+    if (o.id !== orderId) return o;
+    return { ...o, items: o.items.map((line, idx) => (idx === itemIndex ? { ...line, qty } : line)) };
+  }));
+}
+
+function setOrderLinePickupWarehouse(orderId, itemIndex, warehouseId) {
+  updateOrders(state.orders.map((o) => {
+    if (o.id !== orderId) return o;
+    return { ...o, items: o.items.map((line, idx) => (idx === itemIndex ? { ...line, pickupWarehouseId: warehouseId } : line)) };
+  }));
+}
+
+function removeOrderLine(orderId, itemIndex) {
+  const order = state.orders.find((o) => o.id === orderId);
+  if (!order) return;
+  const remaining = order.items.filter((_, idx) => idx !== itemIndex);
+  if (remaining.length === 0) {
+    updateOrders(state.orders.filter((o) => o.id !== orderId));
+    state.revisingOrderId = null;
+  } else {
+    updateOrders(state.orders.map((o) => (o.id === orderId ? { ...o, items: remaining } : o)));
+  }
 }
 
 /* ---- suppliers / items / warehouses CRUD ---- */
@@ -981,15 +1009,47 @@ function renderIncomingSection(incomingOrders) {
           <div class="mb2">
             <div class="text-xs" style="font-weight:500;margin-bottom:6px;color:var(--forest);">Expected ${formatDateLabel(dateStr)}</div>
             <div style="display:flex;flex-direction:column;gap:8px;">
-              ${group.map((o) => `
+              ${group.map((o) => {
+                const isRevising = state.revisingOrderId === o.id;
+                return `
                 <div class="card">
                   <div class="row-between">
                     <div class="text-sm" style="font-weight:500;color:var(--ink);">${escapeHtml(o.supplierName)}</div>
-                    <button data-undo-order="${o.id}" class="btn-sm" style="color:var(--red-text);background:var(--red-bg);">Undo</button>
+                    <div class="row" style="gap:6px;">
+                      <button data-revise-order="${o.id}" class="btn-sm" style="color:var(--amber-text);background:var(--amber-bg);">${isRevising ? 'Done' : 'Revise'}</button>
+                      <button data-undo-order="${o.id}" class="btn-sm" style="color:var(--red-text);background:var(--red-bg);">Undo</button>
+                    </div>
                   </div>
                   <div class="text-xs muted mb1">Ordered ${new Date(o.placedAt).toLocaleDateString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' })}</div>
+                  ${!isRevising ? `
                   <div class="text-xs muted">${o.items.map((l) => `${escapeHtml(l.name)} x${l.qty}${l.toOwnWarehouse ? ' (W)' : ''}`).join(', ')}</div>
-                </div>`).join('')}
+                  ` : `
+                  <div style="display:flex;flex-direction:column;gap:10px;margin-top:4px;">
+                    ${o.items.map((l, idx) => {
+                      const wh = l.pickupWarehouseId && state.warehouses.find((w) => w.id === l.pickupWarehouseId);
+                      return `
+                      <div style="border-top:1px solid var(--border);padding-top:8px;">
+                        <div class="row-between" style="gap:8px;">
+                          <div class="text-xs" style="color:var(--ink);">${escapeHtml(l.name)}${l.toOwnWarehouse ? ' <span style="font-weight:600;color:var(--amber-text);">(W)</span>' : ''}</div>
+                          <button data-remove-order-line="${o.id}:${idx}" title="Remove this item — e.g. out of stock" class="shrink0">${icon('x', 14, 'var(--red-text)')}</button>
+                        </div>
+                        <div class="row-between" style="gap:8px;margin-top:5px;">
+                          <div class="row" style="gap:4px;">
+                            <button data-order-qty-step="${o.id}:${idx}:-1" class="stepper-btn" style="background:var(--tint);width:24px;height:24px;">${icon('minus', 12, 'var(--muted)')}</button>
+                            <span class="font-mono text-sm" style="width:44px;text-align:center;">${l.qty}${l.unit ? ' ' + escapeHtml(l.unit) : ''}</span>
+                            <button data-order-qty-step="${o.id}:${idx}:1" class="stepper-btn" style="background:var(--green);width:24px;height:24px;">${icon('plus', 12, 'var(--forest)')}</button>
+                          </div>
+                          <select data-set-order-pickup="${o.id}:${idx}" style="flex:1;min-width:0;font-size:12.5px;padding:5px 6px;border:1px solid ${wh ? 'var(--border)' : 'var(--amber-border)'};">
+                            <option value="">Not set</option>
+                            ${state.warehouses.map((w) => `<option value="${w.id}" ${w.id === l.pickupWarehouseId ? 'selected' : ''}>${escapeHtml(w.name)}</option>`).join('')}
+                          </select>
+                        </div>
+                      </div>`;
+                    }).join('')}
+                  </div>
+                  `}
+                </div>`;
+              }).join('')}
             </div>
           </div>`;
       }).join('')}
@@ -1417,6 +1477,24 @@ function onMainClick(e) {
   if (btn.dataset.editSupplier) { state.editingSupplierFor = state.editingSupplierFor === btn.dataset.editSupplier ? null : btn.dataset.editSupplier; state.editingPickupFor = null; renderTab(); return; }
   if (btn.dataset.removeLine) { setCartQty(btn.dataset.removeLine, 0); renderTab(); return; }
   if (btn.dataset.undoOrder) { cancelOrder(state.orders.find((o) => o.id === btn.dataset.undoOrder)); return; }
+  if (btn.dataset.reviseOrder) { state.revisingOrderId = state.revisingOrderId === btn.dataset.reviseOrder ? null : btn.dataset.reviseOrder; renderTab(); return; }
+  if (btn.dataset.orderQtyStep) {
+    const [orderId, idxStr, delta] = btn.dataset.orderQtyStep.split(':');
+    const order = state.orders.find((o) => o.id === orderId);
+    const idx = parseInt(idxStr, 10);
+    if (order && order.items[idx]) {
+      const newQty = Math.max(0, Math.round((order.items[idx].qty + parseFloat(delta)) * 10) / 10);
+      setOrderLineQty(orderId, idx, newQty);
+    }
+    renderTab();
+    return;
+  }
+  if (btn.dataset.removeOrderLine) {
+    const [orderId, idxStr] = btn.dataset.removeOrderLine.split(':');
+    removeOrderLine(orderId, parseInt(idxStr, 10));
+    renderTab();
+    return;
+  }
   if (btn.dataset.incomingMode) { state.incomingCumulative = btn.dataset.incomingMode === 'through'; renderTab(); return; }
 
   if (btn.hasAttribute('data-open-supplier-modal')) { openSupplierModal('new', null); return; }
@@ -1466,6 +1544,12 @@ function onMainChange(e) {
     return;
   }
   if (t.dataset && t.dataset.setPickup) { setCartPickupWarehouse(t.dataset.setPickup, t.value); state.editingPickupFor = null; renderTab(); return; }
+  if (t.dataset && t.dataset.setOrderPickup) {
+    const [orderId, idxStr] = t.dataset.setOrderPickup.split(':');
+    setOrderLinePickupWarehouse(orderId, parseInt(idxStr, 10), t.value);
+    renderTab();
+    return;
+  }
   if (t.dataset && t.dataset.setSupplier) { setCartSupplierOverride(t.dataset.setSupplier, t.value); state.editingSupplierFor = null; renderTab(); return; }
   if (t.id === 'incomingFilterDateSelect') { state.incomingFilterDate = t.value; renderTab(); return; }
   if (t.dataset && t.dataset.selectWarehouse) {
