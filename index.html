@@ -46,9 +46,10 @@
   .btn-whatsapp { background:var(--whatsapp); color:#fff; }
   .btn-cancel { background:var(--tint); color:var(--muted); }
 
-  input[type=text],input[type=number],input[type=tel],input[type=date],input[type=search],select {
+  input[type=text],input[type=number],input[type=tel],input[type=date],input[type=search],select,textarea {
     width:100%; padding:10px 12px; border-radius:10px; border:1px solid var(--border); background:var(--cream); color:var(--ink);
   }
+  textarea { resize:vertical; }
   .field { margin-bottom:12px; }
   .field label { display:block; font-size:12px; font-weight:500; color:var(--muted); margin-bottom:4px; }
   .hint { font-size:12px; color:var(--faint); margin-top:-6px; margin-bottom:12px; }
@@ -141,6 +142,8 @@ function icon(name, size, color, extra) {
     clipboard: '<path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/>',
     alert: '<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>',
     minus: '<line x1="5" y1="12" x2="19" y2="12"/>',
+    trendingDown: '<polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/>',
+    clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
   };
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ${extra}>${paths[name] || ''}</svg>`;
 }
@@ -333,6 +336,7 @@ const state = {
   cart: loadJSON('cart', []),
   orders: loadJSON('orders', []),
   warehouses: loadJSON('warehouses', []),
+  shipments: loadJSON('shipments', []),   // Key SKU contracted/spot shipments — see Runway tab
   tab: 'today',
   orderDate: defaultOrderDate(),
   draftQty: {},              // itemId -> string, not persisted (session-only, like the app version)
@@ -345,6 +349,7 @@ const state = {
   showSuppliers: false,
   selectedWarehousesForDriverMsg: [],
   stockSearch: '',
+  runwaySearch: '',
   incomingFilterDate: '',
   incomingCumulative: false,
   modal: null,               // { type: 'item'|'supplier'|'warehouse', mode:'new'|'edit', data, insertAfterId }
@@ -385,6 +390,7 @@ function updateItems(next) { state.items = next; persist('items'); }
 function updateCart(next) { state.cart = next; persist('cart'); }
 function updateOrders(next) { state.orders = next; persist('orders'); }
 function updateWarehouses(next) { state.warehouses = next; persist('warehouses'); }
+function updateShipments(next) { state.shipments = next; persist('shipments'); }
 
 function effectiveSupplierId(cartLine, item) {
   return cartLine.supplierOverride || (item && item.supplierId);
@@ -488,12 +494,17 @@ function sendSupplierOrder(group, dateStr) {
     expectedDate,
     status: 'pending',
   };
+  // Key SKU link: deduct this order from the supplier's landed shipments
+  // (earliest rent-free deadline first) and remember what was taken so
+  // Undo can put it back exactly.
+  newOrder.drawdowns = applyDrawdownsForOrder(newOrder);
   updateOrders([...state.orders, newOrder]);
   updateCart(state.cart.filter((c) => !lines.some((l) => l.id === c.id)));
   renderTab();
 }
 
 function cancelOrder(order) {
+  revertDrawdownsForOrder(order); // put any Key SKU drawdowns back on their shipments
   updateOrders(state.orders.filter((o) => o.id !== order.id));
   const restoredLines = order.items.map((line) => {
     const item = state.items.find((i) => i.id === line.itemId);
@@ -612,6 +623,7 @@ function exportDataToFile() {
     warehouses: state.warehouses,
     orders: state.orders,
     cart: state.cart,
+    shipments: state.shipments,
   };
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -638,6 +650,7 @@ function importDataFromFile(file) {
       if (Array.isArray(data.warehouses)) updateWarehouses(data.warehouses);
       if (Array.isArray(data.orders)) updateOrders(data.orders);
       if (Array.isArray(data.cart)) updateCart(data.cart);
+      if (Array.isArray(data.shipments)) updateShipments(data.shipments);
       renderTab();
       showToast('Data imported.');
     } catch (err) {
@@ -655,6 +668,7 @@ const TABS = [
   { key: 'today', label: 'Orders', icon: 'clipboard', title: 'Orders' },
   { key: 'cart', label: 'Cart', icon: 'cart', title: 'Cart' },
   { key: 'stock', label: 'Stock', icon: 'package', title: 'Stock' },
+  { key: 'runway', label: 'Runway', icon: 'trendingDown', title: 'Key SKU Runway' },
   { key: 'suppliers', label: 'Suppliers', icon: 'users', title: 'Suppliers' },
 ];
 
@@ -693,6 +707,7 @@ function renderTab() {
   if (state.tab === 'today') { main.innerHTML = renderOrdersTab(); filterOrderListRows(); }
   else if (state.tab === 'cart') main.innerHTML = renderCartTab();
   else if (state.tab === 'stock') { main.innerHTML = renderStockTab(); filterStockRows(); }
+  else if (state.tab === 'runway') { main.innerHTML = renderRunwayTab(); filterRunwayRows(); }
   else if (state.tab === 'suppliers') main.innerHTML = renderSuppliersTab();
   renderNav(); // badge count may have changed
   wireTabEvents();
@@ -1114,6 +1129,694 @@ function filterStockRows() {
 
 
 /* ============================================================
+   RUNWAY ENGINE — Key SKU simulation (contracted vs. spot shipments,
+   gap/stockout projection, rent-free deadline tracking)
+
+   Only items with keySku === true are ever touched by this. Everything
+   else on Stock just uses par vs. stock, same as before — no change.
+   ============================================================ */
+function daysFromToday(dateStr) {
+  if (!dateStr) return null;
+  const d0 = new Date(todayStr() + 'T00:00:00');
+  const d1 = new Date(dateStr + 'T00:00:00');
+  return Math.round((d1 - d0) / 86400000);
+}
+
+// ---- Core simulation ------------------------------------------------------
+// Batch-level model. Each shipment is tracked as its own batch so we always
+// know how much of THAT batch is left on any given day — pooling them together
+// made rent exposure wrong (an in-transit batch inflated a landed batch's
+// figure). Consumption is drawn from batches earliest-rent-deadline first,
+// matching the drawdown rule used when orders are sent.
+//
+// Consumption per day, in priority order:
+//   1. A pending order scheduled that day  -> use its ACTUAL quantity.
+//   2. Day is within the ordering horizon (state.orderDate) with no order
+//      -> consume 0. Ordering for that day is done; nothing was ordered.
+//   3. Otherwise -> forecast using the average burn rate.
+// This stops the average burn being applied to days we already have real
+// answers for (user formula: D = P + (S−A)/R).
+
+// Pending (not yet picked up) drawdowns hitting a given shipment.
+function pendingDrawdownForShipment(shipmentId) {
+  return state.orders.reduce((sum, o) => {
+    if (!isStillIncoming(o) || !o.drawdowns) return sum;
+    return sum + o.drawdowns
+      .filter((d) => d.shipmentId === shipmentId)
+      .reduce((s2, d) => s2 + (Number(d.qty) || 0), 0);
+  }, 0);
+}
+
+// What's physically still in the warehouse for a shipment: its remaining
+// balance, plus anything a pending order has claimed but not yet collected.
+function physicalRemaining(s) {
+  return shipmentRemaining(s) + pendingDrawdownForShipment(s.id);
+}
+
+// Horizon: five months. Long enough to see a contract loading in Sept arrive
+// in Nov and be consumed into Dec; short enough that the coverage bar stays
+// readable on a phone. This is all numbers/dates now — no curve — so the
+// horizon is chosen for usefulness, not for what fits on a chart.
+const SIM_DAYS = 150;
+
+// Turn a day-offset into a date string.
+function dayToDateStr(day) {
+  const d = new Date();
+  d.setDate(d.getDate() + day);
+  return toLocalDateStr(d);
+}
+
+// Near-term dates are stated precisely; anything further out is deliberately
+// rough ("~mid-Nov"), because a burn-rate projection months ahead is an
+// estimate and shouldn't pretend otherwise.
+function roughDateLabel(day) {
+  if (day == null) return '—';
+  const d = new Date();
+  d.setDate(d.getDate() + day);
+  if (day <= 14) return formatDateLabel(toLocalDateStr(d));
+  const dom = d.getDate();
+  const part = dom <= 10 ? 'early' : dom <= 20 ? 'mid' : 'late';
+  const mon = d.toLocaleDateString(undefined, { month: 'short' });
+  const yr = d.getFullYear() !== new Date().getFullYear() ? ' ' + d.getFullYear() : '';
+  return `~${part} ${mon}${yr}`;
+}
+
+function simulateItemRunway(item, shipments, days = SIM_DAYS) {
+  const floor = parForDate(item, new Date());
+  const burn = effectiveBurn(item);
+  const itemShipments = shipments.filter((s) => s.itemId === item.id);
+  const itemShipmentIds = new Set(itemShipments.map((s) => s.id));
+  const horizonDay = Math.max(0, daysFromToday(state.orderDate || todayStr()));
+
+  // Known pickups: qty drawn from THIS item's shipments, by day.
+  const scheduled = {};
+  state.orders.forEach((o) => {
+    if (!isStillIncoming(o) || !o.drawdowns || !o.drawdowns.length) return;
+    const qty = o.drawdowns
+      .filter((d) => itemShipmentIds.has(d.shipmentId))
+      .reduce((sum, d) => sum + (Number(d.qty) || 0), 0);
+    if (qty <= 0) return;
+    const day = Math.max(0, Math.min(daysFromToday(o.expectedDate || todayStr()), days));
+    scheduled[day] = (scheduled[day] || 0) + qty;
+  });
+
+  // Build batches. Landed = available from day 0. In transit = available from
+  // its ETA day (a past ETA means late, so treat it as arriving today).
+  const batches = itemShipments.map((s) => ({
+    id: s.id,
+    shipment: s,
+    arriveDay: s.received ? 0 : Math.max(0, daysFromToday(s.etaDate)),
+    qty: physicalRemaining(s),
+    deadline: s.rentFreeDeadline || '9999-99-99', // no deadline = drawn last
+    perDay: [], // own remaining, by day
+  })).filter((b) => b.qty > 0 && b.arriveDay <= days);
+
+  // "Other stock" (the manual box) — loose stock with no shipment or deadline.
+  const otherQty = Number(item.stockAvailable) || 0;
+  if (otherQty > 0) {
+    batches.push({ id: '__other', shipment: null, arriveDay: 0, qty: otherQty, deadline: '9999-99-99', perDay: [] });
+  }
+
+  const drawOrder = [...batches].sort((a, b) => a.deadline.localeCompare(b.deadline));
+  const rows = [];
+  const restockDays = [];
+
+  for (let day = 0; day <= days; day++) {
+    if (day > 0 && batches.some((b) => b.arriveDay === day)) restockDays.push(day);
+
+    // Balance = everything that has arrived and isn't used up.
+    const balance = batches.reduce((sum, b) => sum + (b.arriveDay <= day ? b.qty : 0), 0);
+    // In transit = booked stock that hasn't landed yet as of this day.
+    const inTransit = batches.reduce((sum, b) => sum + (b.arriveDay > day ? b.qty : 0), 0);
+    rows.push({ day, balance, inTransit, total: balance + inTransit });
+    batches.forEach((b) => { b.perDay[day] = b.arriveDay <= day ? b.qty : 0; });
+
+    if (day >= days) break;
+
+    // Consume: actual if known, 0 if ordering for that day is done, else forecast.
+    let consume;
+    if (scheduled[day] != null) consume = scheduled[day];
+    else if (day <= horizonDay) consume = 0;
+    else consume = burn;
+
+    let left = consume;
+    for (const b of drawOrder) {
+      if (left <= 0) break;
+      if (b.arriveDay > day) continue; // not here yet — can't take from it
+      const take = Math.min(b.qty, left);
+      b.qty -= take;
+      left -= take;
+    }
+  }
+
+  return { rows, restockDays, floor, batches, horizonDay };
+}
+
+// Ranges (inclusive day spans) where balance is at/below zero — real stockouts.
+function stockoutRanges(rows) {
+  const ranges = [];
+  let start = null;
+  rows.forEach((r) => {
+    if (r.balance <= 0 && start === null) start = r.day;
+    if (r.balance > 0 && start !== null) { ranges.push([start, r.day - 1]); start = null; }
+  });
+  if (start !== null) ranges.push([start, rows[rows.length - 1].day]);
+  return ranges;
+}
+
+// Rent exposure: how much of THIS batch will still be sitting in the warehouse
+// when its own rent-free deadline hits. Read from that batch's own depletion
+// curve, so other shipments can't inflate or mask it.
+//
+// This deliberately includes batches still IN TRANSIT: a contract landing in
+// Nov whose rent-free window closes in Dec can absolutely outstay it, and
+// that's precisely the "am I burning too slow / did I book too much" warning
+// worth having while there's still time to act. What matters is whether the
+// batch has arrived by its OWN deadline day, not whether it's landed today.
+// (The coverage bar already worked this way — the text used to disagree.)
+function rentExposuresForItem(item, shipments, sim) {
+  const lastDay = sim.rows.length ? sim.rows[sim.rows.length - 1].day : 0;
+  return sim.batches
+    .filter((b) => b.shipment && b.shipment.rentFreeDeadline)
+    .map((b) => {
+      const rawDay = daysFromToday(b.shipment.rentFreeDeadline);
+      if (rawDay == null) return null;
+      if (rawDay > lastDay) return null;      // deadline past the forecast window — can't see it
+      if (rawDay < b.arriveDay) return null;  // deadline before it even lands — nothing sitting there yet
+      const day = Math.max(0, rawDay);
+      const qtyAtDeadline = b.perDay[day] || 0; // this batch's own remaining
+      if (qtyAtDeadline <= 0) return null;      // burns down in time — no exposure
+      // "Paying rent now" only if it's actually here AND the date has passed.
+      const past = rawDay <= 0 && b.arriveDay <= 0;
+      return { shipment: b.shipment, day, qtyAtDeadline, past };
+    })
+    .filter(Boolean);
+}
+
+function keySkuStatus(item) {
+  const sim = simulateItemRunway(item, state.shipments);
+  const { rows, floor } = sim;
+  const outages = stockoutRanges(rows);
+  // Only gaps opening soon are alarming — a gap 8 months out is just business.
+  const nearOutages = outages.filter(([s]) => s <= ALERT_WINDOW_DAYS);
+  const rentExposures = rentExposuresForItem(item, state.shipments, sim);
+  const belowFloorDays = rows.filter((r) => r.balance > 0 && r.balance < floor).length;
+  const base = { sim, outages, nearOutages, rentExposures, floor };
+  if (nearOutages.length) return { ...base, level: 'stockout' };
+  if (rentExposures.length) return { ...base, level: 'rent' };
+  if (belowFloorDays > 0) return { ...base, level: 'gap' };
+  return { ...base, level: 'ok' };
+}
+
+// For the timeline: when each batch lands and when it's projected to run out.
+// emptyDay = first day at/after arrival where this batch's own balance is zero.
+function batchLifecycle(sim) {
+  const lastDay = sim.rows.length ? sim.rows[sim.rows.length - 1].day : 0;
+  return sim.batches.map((b) => {
+    let emptyDay = null;
+    for (let d = b.arriveDay; d <= lastDay; d++) {
+      if ((b.perDay[d] || 0) <= 0) { emptyDay = d; break; }
+    }
+    return { ...b, emptyDay };
+  });
+}
+
+// A gap 300 days out is normal business, not an alarm. Only gaps opening
+// within this window raise an alert — everything else is still drawn on the
+// coverage bar, just not shouted about.
+const ALERT_WINDOW_DAYS = 60;
+
+// Classify every day as covered / rent-accruing / empty, then merge into runs
+// so the coverage bar draws a handful of rects instead of 365.
+function coverageSegments(sim) {
+  const lastDay = sim.rows.length ? sim.rows[sim.rows.length - 1].day : 0;
+  const stateOf = (day) => {
+    const row = sim.rows[day];
+    if (!row || row.balance <= 0) return 'gap';
+    // Rent accrues on a batch that has landed, is past its rent-free date,
+    // and still has stock sitting in it.
+    const renting = sim.batches.some((b) => {
+      if (!b.shipment || !b.shipment.rentFreeDeadline) return false;
+      const dl = daysFromToday(b.shipment.rentFreeDeadline);
+      return b.arriveDay <= day && dl != null && dl <= day && (b.perDay[day] || 0) > 0;
+    });
+    return renting ? 'rent' : 'covered';
+  };
+  const segs = [];
+  let start = 0;
+  let cur = stateOf(0);
+  for (let day = 1; day <= lastDay; day++) {
+    const s = stateOf(day);
+    if (s !== cur) { segs.push({ state: cur, from: start, to: day - 1 }); start = day; cur = s; }
+  }
+  segs.push({ state: cur, from: start, to: lastDay });
+  return segs;
+}
+
+const COVERAGE_COLORS = { covered: 'var(--forest)', rent: 'var(--amber-strong)', gap: '#C0503A' };
+
+// Horizontal coverage bar — no Y axis, just "am I covered on this date".
+// All bars share the same 12-month scale, so gaps line up vertically across
+// items and you can spot four SKUs going dry the same month at a glance.
+function renderCoverageBar(sim, opts = {}) {
+  const { height = 12, showMonths = false } = opts;
+  const lastDay = sim.rows.length ? sim.rows[sim.rows.length - 1].day : 0;
+  if (!lastDay) return '';
+  const w = 300;
+  const h = height + (showMonths ? 12 : 0);
+  const x = (d) => (d / lastDay) * w;
+
+  const rects = coverageSegments(sim).map((s) =>
+    `<rect x="${x(s.from).toFixed(1)}" y="0" width="${Math.max(0.7, x(s.to + 1) - x(s.from)).toFixed(1)}" height="${height}" fill="${COVERAGE_COLORS[s.state]}" opacity="${s.state === 'covered' ? 0.85 : 1}"/>`
+  ).join('');
+
+  // Month boundaries as faint ticks; labelled when asked.
+  const ticks = [];
+  const today = new Date();
+  for (let mo = 1; mo <= 6; mo++) {
+    const d = new Date(today.getFullYear(), today.getMonth() + mo, 1);
+    const day = Math.round((d - new Date(todayStr() + 'T00:00:00')) / 86400000);
+    if (day < 0 || day > lastDay) continue;
+    ticks.push(`<line x1="${x(day).toFixed(1)}" y1="0" x2="${x(day).toFixed(1)}" y2="${height}" stroke="#fff" stroke-width="0.8" opacity="0.55"/>`);
+    if (showMonths) {
+      ticks.push(`<text x="${x(day).toFixed(1)}" y="${height + 9}" font-size="8" fill="var(--faint)" text-anchor="middle">${d.toLocaleDateString(undefined, { month: 'short' })}</text>`);
+    }
+  }
+
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="width:100%;height:${h}px;display:block;border-radius:3px;overflow:visible;">
+    ${rects}${ticks.join('')}
+  </svg>`;
+}
+
+const RUNWAY_LEVEL_META = {
+  stockout: { label: 'Stockout', bg: 'var(--red-bg)', text: 'var(--red-text)' },
+  rent: { label: 'Rent risk', bg: 'var(--amber-bg)', text: 'var(--amber-text)' },
+  gap: { label: 'Below floor', bg: 'var(--amber-bg)', text: 'var(--amber-strong)' },
+  ok: { label: 'OK', bg: 'var(--green)', text: 'var(--forest)' },
+};
+
+/* ============================================================
+   RUNWAY TAB — only Key SKUs (active items with keySku === true) show up here
+   ============================================================ */
+function renderRunwayTab() {
+  const keyItems = state.items.filter((i) => i.keySku && !i.inactive);
+  if (keyItems.length === 0) {
+    return renderEmptyState('No Key SKUs yet', 'Open a stock item and tick "Track as Key SKU" to start watching its contracts and rent deadlines here.');
+  }
+  const levelOrder = { stockout: 0, rent: 1, gap: 2, ok: 3 };
+  const rowsData = keyItems.map((item) => ({ item, status: keySkuStatus(item) }))
+    .sort((a, b) => levelOrder[a.status.level] - levelOrder[b.status.level]);
+
+  const rows = rowsData.map(({ item, status }) => {
+    const meta = RUNWAY_LEVEL_META[status.level];
+    const unitStr = item.unit ? ' ' + escapeHtml(item.unit) : '';
+    let detail = '';
+    if (status.level === 'stockout') {
+      const [s] = status.nearOutages[0];
+      detail = `Runs out ${roughDateLabel(s)} — spot buy or book stock`;
+    } else if (status.level === 'rent') {
+      const worst = Math.max(...status.rentExposures.map((x) => x.qtyAtDeadline));
+      const anyPast = status.rentExposures.some((x) => x.past);
+      detail = anyPast
+        ? `~${worst}${unitStr} paying rent now — move out or burn down`
+        : `~${worst}${unitStr} still here when rent-free ends`;
+    } else if (status.level === 'gap') {
+      detail = 'Dips below safety floor';
+    } else {
+      const [s] = status.outages[0] || [];
+      detail = s != null ? `Covered until ${roughDateLabel(s)}` : 'Covered — no gaps or rent risk';
+    }
+    const supplier = state.suppliers.find((s) => s.id === item.supplierId);
+    return `
+      <button data-open-runway-detail="${item.id}" data-runway-row
+        data-name="${escapeHtml((item.name || '').toLowerCase())}"
+        data-code="${escapeHtml((item.itemCode || '').toLowerCase())}"
+        data-supplier="${escapeHtml((supplier ? supplier.name : '').toLowerCase())}"
+        class="card" style="text-align:left;width:100%;padding:12px;">
+        <div class="row" style="gap:10px;">
+          <div class="flex1" style="min-width:0;">
+            <div class="text-sm truncate" style="font-weight:500;color:var(--ink);">${escapeHtml(item.name)}</div>
+            <div class="text-xs truncate muted">${detail}</div>
+          </div>
+          <span class="tag shrink0" style="background:${meta.bg};color:${meta.text};font-weight:600;">${meta.label}</span>
+        </div>
+        <div style="margin-top:9px;">${renderCoverageBar(status.sim, { height: 11 })}</div>
+      </button>`;
+  }).join('');
+
+  // One shared month ruler under the stack — every bar uses the same 12-month
+  // scale, so a gap in August sits at the same x-position on every row.
+  const scaleSim = rowsData.length ? rowsData[0].status.sim : null;
+
+  return `
+    <div>
+      <input type="search" id="runwaySearch" placeholder="Search item name or code…" value="${escapeHtml(state.runwaySearch)}" class="mb2">
+      <div class="row wrap" style="gap:12px;margin-bottom:10px;">
+        <span class="text-xs row" style="gap:4px;align-items:center;"><span style="width:10px;height:10px;border-radius:2px;background:var(--forest);opacity:.85;display:inline-block;"></span> Covered</span>
+        <span class="text-xs row" style="gap:4px;align-items:center;"><span style="width:10px;height:10px;border-radius:2px;background:var(--amber-strong);display:inline-block;"></span> Rent accruing</span>
+        <span class="text-xs row" style="gap:4px;align-items:center;"><span style="width:10px;height:10px;border-radius:2px;background:#C0503A;display:inline-block;"></span> No stock</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;">${rows}</div>
+      <p id="runwayNoMatches" class="text-sm muted hidden" style="padding:16px 0;text-align:center;">No Key SKUs match that search.</p>
+      ${scaleSim ? `<div style="margin-top:2px;padding:0 12px;">${renderCoverageBar(scaleSim, { height: 0, showMonths: true })}</div>` : ''}
+      <p class="text-xs faint" style="margin-top:10px;">Bars span the next 5 months on a shared scale — a gap in August sits in the same place on every row. Tap an item for the dated breakdown.</p>
+    </div>`;
+}
+
+// Fast show/hide filter (same approach as the Stock tab) — no re-render, so it
+// stays responsive even with the coverage bars drawn.
+function filterRunwayRows() {
+  const q = state.runwaySearch.trim().toLowerCase();
+  let anyVisible = false;
+  document.querySelectorAll('[data-runway-row]').forEach((el) => {
+    const match = !q || el.dataset.name.includes(q) || el.dataset.code.includes(q) || el.dataset.supplier.includes(q);
+    el.classList.toggle('hidden', !match);
+    if (match) anyVisible = true;
+  });
+  const noMatches = document.getElementById('runwayNoMatches');
+  if (noMatches) noMatches.classList.toggle('hidden', anyVisible || !q);
+}
+
+/* ---- Runway detail: a dated timeline, not a chart.
+   Contracts can be booked months out (loading Sept, arriving Nov, consumed
+   into Dec), which a squashed 45-day curve on a phone could never show. Dates
+   and sentences handle any horizon and answer the only two questions that
+   matter: when do I run dry (and must I spot-buy), and will this batch outstay
+   its rent-free window. ---- */
+function renderRunwayDetailModal(m) {
+  const item = state.items.find((i) => i.id === m.itemId);
+  if (!item) return modalShell('Item not found', '<p class="text-sm muted">This item may have been deleted.</p>');
+
+  const sim = simulateItemRunway(item, state.shipments);
+  const { rows } = sim;
+  const outages = stockoutRanges(rows);
+  const rentExposures = rentExposuresForItem(item, state.shipments, sim);
+  const lifecycle = batchLifecycle(sim);
+  const burn = effectiveBurn(item);
+  const unitStr = item.unit ? ' ' + escapeHtml(item.unit) : '';
+
+  const atWarehouse = rows.length ? rows[0].balance : 0;
+  const inTransitNow = rows.length ? (rows[0].inTransit || 0) : 0;
+  const lastDay = rows.length ? rows[rows.length - 1].day : 0;
+  const firstOut = outages.length ? outages[0][0] : null;
+  const nearOutages = outages.filter(([s]) => s <= ALERT_WINDOW_DAYS);
+
+  const burnLabel = burn ? `${Math.round(burn * 10) / 10}/day` : 'not set';
+  const runsOutLabel = !burn ? 'set a burn rate' : firstOut != null ? roughDateLabel(firstOut) : 'past 5 months';
+
+  /* --- Headline: the one-line answer --- */
+  let headline;
+  if (!burn) {
+    headline = `<div class="text-sm">Add a daily burn rate (or send some orders) to project this item.</div>`;
+  } else if (firstOut == null) {
+    headline = `<div class="text-sm">Covered for the next 5 months at ${burnLabel}.</div>`;
+  } else {
+    headline = `<div class="text-sm">Stock runs out <strong>${roughDateLabel(firstOut)}</strong> at ${burnLabel}.</div>`;
+  }
+
+  /* --- Gaps: stretches with nothing to sell. The spot-buy prompt. --- */
+  const gapAlerts = nearOutages.map(([s, e]) => {
+    const openEnded = e >= lastDay;
+    const span = e - s + 1;
+    return `
+      <div class="row" style="gap:8px;align-items:flex-start;background:var(--red-bg);border-radius:8px;padding:10px 12px;">
+        ${icon('alert', 16, 'var(--red-text)')}
+        <span class="text-sm">${openEnded
+          ? `<strong>Nothing booked after ${roughDateLabel(s)}</strong> — no shipment covers the rest of the year. Spot buy, or book a contract.`
+          : `<strong>Gap: ${roughDateLabel(s)} → ${roughDateLabel(e)}</strong> (~${span} day${span === 1 ? '' : 's'} with no stock) — spot buy needed to bridge it.`}</span>
+      </div>`;
+  }).join('');
+
+  /* --- Rent: burning too slow, money starts leaking. --- */
+  const rentAlerts = rentExposures.map((x) => `
+    <div class="row" style="gap:8px;align-items:flex-start;background:var(--amber-bg);border-radius:8px;padding:10px 12px;">
+      ${icon('clock', 16, 'var(--amber-strong)')}
+      <span class="text-sm">${x.past
+        ? `<strong>~${x.qtyAtDeadline}${unitStr} paying rent now</strong> — rent-free ended ${formatDateLabel(x.shipment.rentFreeDeadline)}. Move it out or burn it down.`
+        : `<strong>~${x.qtyAtDeadline}${unitStr} still here when rent-free ends</strong> (${roughDateLabel(x.day)}) — ${escapeHtml(x.shipment.header || 'this batch')} won't burn down in time.`}</span>
+    </div>`).join('');
+
+  const alerts = (gapAlerts + rentAlerts) || `<p class="text-sm muted">No gaps in the next ${ALERT_WINDOW_DAYS} days, no rent risk. The bar above shows all 5 months.</p>`;
+
+  /* --- The timeline: each batch as a dated entry --- */
+  const timeline = lifecycle
+    .filter((b) => b.shipment)
+    .sort((a, b) => a.arriveDay - b.arriveDay)
+    .map((b) => {
+      const s = b.shipment;
+      const supplier = state.suppliers.find((sup) => sup.id === s.supplierId);
+      const landed = s.received;
+      const lastsUntil = b.emptyDay != null ? roughDateLabel(b.emptyDay) : 'past 5 months';
+      const rentEx = rentExposures.find((x) => x.shipment.id === s.id);
+      // Only claim "clears in time" when we've actually checked it. A deadline
+      // past the 5-month window can't be verified, so say so rather than tick it.
+      const rentDeadlineDay = s.rentFreeDeadline ? daysFromToday(s.rentFreeDeadline) : null;
+      const beyondView = rentDeadlineDay != null && rentDeadlineDay > lastDay;
+      let rentLine = '';
+      if (s.rentFreeDeadline) {
+        if (rentEx) {
+          rentLine = `Rent-free until ${formatDateLabel(s.rentFreeDeadline)} — <span style="color:var(--amber-strong);font-weight:600;">~${rentEx.qtyAtDeadline}${unitStr} still here by then</span>`;
+        } else if (beyondView) {
+          rentLine = `Rent-free until ${formatDateLabel(s.rentFreeDeadline)} — <span class="faint">beyond the 5-month view</span>`;
+        } else {
+          rentLine = `Rent-free until ${formatDateLabel(s.rentFreeDeadline)} — clears in time ✓`;
+        }
+      }
+
+      return `
+      <div class="card" style="padding:12px;">
+        <div class="row" style="gap:8px;">
+          <button data-edit-shipment="${s.id}" class="flex1" style="text-align:left;min-width:0;">
+            <div class="text-sm truncate" style="font-weight:600;">${s.header ? escapeHtml(s.header) : (supplier ? escapeHtml(supplier.name) : 'Shipment')}</div>
+            <div class="text-xs muted truncate">${b.qty}${unitStr} left of ${s.quantity}${s.askingPrice ? ` · $${s.askingPrice}` : ''}${supplier && s.header ? ' · ' + escapeHtml(supplier.name) : ''}</div>
+          </button>
+          <button data-toggle-received="${s.id}" class="btn-sm shrink0" style="background:${landed ? 'var(--green)' : 'var(--tint)'};color:${landed ? 'var(--forest)' : '#3B7EA1'};">${landed ? 'Landed' : 'In transit'}</button>
+        </div>
+        <div class="text-xs" style="margin-top:8px;line-height:1.7;color:var(--muted);">
+          ${landed
+            ? `In the warehouse now · lasts until <strong style="color:var(--ink);">${lastsUntil}</strong>`
+            : `Arrives <strong style="color:var(--ink);">${roughDateLabel(b.arriveDay)}</strong> · lasts until <strong style="color:var(--ink);">${lastsUntil}</strong>`}
+          ${rentLine ? `<br>${rentLine}` : ''}
+          ${s.notes ? `<br><span class="faint">${escapeHtml(s.notes)}</span>` : ''}
+        </div>
+      </div>`;
+    }).join('');
+
+  const finished = state.shipments.filter((s) => s.itemId === item.id && shipmentRemaining(s) <= 0);
+  const finishedRows = finished.map((s) => `
+    <div class="card row" style="padding:10px 12px;opacity:.5;gap:8px;">
+      <button data-edit-shipment="${s.id}" class="flex1" style="text-align:left;min-width:0;">
+        <div class="text-sm truncate">${s.header ? escapeHtml(s.header) : 'Shipment'} · ${s.quantity}${unitStr} <span class="tag">Finished</span></div>
+      </button>
+    </div>`).join('');
+
+  const body = `
+    <div class="row wrap gap2 mb2" style="align-items:flex-end;">
+      <div>
+        <div class="text-xs muted mb1">Other stock</div>
+        <input type="number" inputmode="decimal" data-stock-available-for="${item.id}" value="${item.stockAvailable ?? 0}" class="font-mono"
+          style="width:66px;padding:6px 8px;border-radius:8px;border:1.5px solid var(--forest);background:#F2F7F5;color:var(--forest);font-weight:700;font-size:15px;">
+      </div>
+      <div><div class="text-xs muted">At warehouse</div><div class="font-mono text-sm" style="font-weight:700;">${atWarehouse}</div></div>
+      ${inTransitNow > 0 ? `<div><div class="text-xs muted">In transit</div><div class="font-mono text-sm" style="font-weight:700;color:#3B7EA1;">${inTransitNow}</div></div>` : ''}
+      <div><div class="text-xs muted">Runs out</div><div class="text-sm" style="font-weight:700;">${runsOutLabel}</div></div>
+    </div>
+
+    <div class="card" style="padding:12px;margin-bottom:14px;background:var(--tint);">${headline}</div>
+
+    <div style="margin-bottom:4px;">${renderCoverageBar(sim, { height: 16, showMonths: true })}</div>
+    <div class="row wrap" style="gap:12px;margin-bottom:16px;">
+      <span class="text-xs row" style="gap:4px;align-items:center;"><span style="width:9px;height:9px;border-radius:2px;background:var(--forest);opacity:.85;display:inline-block;"></span> Covered</span>
+      <span class="text-xs row" style="gap:4px;align-items:center;"><span style="width:9px;height:9px;border-radius:2px;background:var(--amber-strong);display:inline-block;"></span> Rent accruing</span>
+      <span class="text-xs row" style="gap:4px;align-items:center;"><span style="width:9px;height:9px;border-radius:2px;background:#C0503A;display:inline-block;"></span> No stock</span>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:18px;">${alerts}</div>
+
+    <div class="section-label">Shipments</div>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:10px;">${timeline || '<p class="text-sm muted">No shipments logged yet.</p>'}</div>
+    ${finishedRows ? `<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px;">${finishedRows}</div>` : ''}
+    <button data-add-shipment="${item.id}" class="btn btn-soft" style="display:flex;align-items:center;gap:6px;">${icon('plus', 16, 'var(--forest)')} Add shipment</button>
+    <p class="hint" style="margin-top:10px;">Dates further than two weeks out are rough on purpose — they come from an average burn rate, so treating them as exact would be false precision.</p>`;
+
+  return modalShell(item.name, body);
+}
+
+/* ---- Shipment form (add/edit) — reached only from a Key SKU's detail view ---- */
+function openShipmentModal(mode, shipment, itemId, returnTo) {
+  const item = state.items.find((i) => i.id === itemId);
+  const draft = shipment ? {
+    itemId: shipment.itemId, header: shipment.header || '',
+    supplierId: shipment.supplierId || (item ? item.supplierId : '') || '',
+    askingPrice: shipment.askingPrice ?? '',
+    quantity: shipment.quantity ?? 0, etaDate: shipment.etaDate || '',
+    rentFreeDeadline: shipment.rentFreeDeadline || '', received: !!shipment.received,
+    notes: shipment.notes || '', drawnDown: shipment.drawnDown ?? 0,
+  } : {
+    itemId, header: '', supplierId: (item ? item.supplierId : '') || '', askingPrice: '',
+    quantity: 0, etaDate: '', rentFreeDeadline: '', received: false, notes: '', drawnDown: 0,
+  };
+  openModal({ type: 'shipment', mode, data: shipment, draft, returnTo });
+}
+
+function renderShipmentForm(m) {
+  const shipment = m.mode === 'edit' ? m.data : null;
+  const d = m.draft;
+  const item = state.items.find((i) => i.id === d.itemId);
+  const canSave = Number(d.quantity) > 0;
+
+  const body = `
+    ${item ? `<p class="text-xs faint mb2">${escapeHtml(item.name)}</p>` : ''}
+    ${fieldHtml('Header (optional)', `<input type="text" id="f_header" value="${escapeHtml(d.header)}" placeholder="e.g. Mataboi 6月到">`)}
+    <p class="hint">A short label to help you recognize this batch at a glance — whatever's useful to you.</p>
+    ${fieldHtml('Supplier', `<select id="f_supplierId">
+        <option value="">Not set</option>
+        ${state.suppliers.map((s) => `<option value="${s.id}" ${s.id === d.supplierId ? 'selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}
+      </select>`)}
+    <div class="row gap2">
+      <div class="flex1">${fieldHtml('Quantity', `<input type="number" inputmode="decimal" id="f_quantity" value="${d.quantity}">`)}</div>
+      <div class="flex1">${fieldHtml('Asking price (optional)', `<input type="number" inputmode="decimal" id="f_askingPrice" value="${d.askingPrice}">`)}</div>
+    </div>
+    ${fieldHtml('Expected arrival (ETA)', `<input type="date" id="f_etaDate" value="${d.etaDate}">`)}
+    ${fieldHtml('Rent-free deadline', `<input type="date" id="f_rentFreeDeadline" value="${d.rentFreeDeadline}">`)}
+    <p class="hint">Usually the arrival/invoice date plus your agreed rent-free period.</p>
+    <label class="row" style="gap:8px;margin-bottom:12px;cursor:pointer;">
+      <input type="checkbox" id="f_received" ${d.received ? 'checked' : ''}>
+      <span class="text-sm">Already landed / in warehouse</span>
+    </label>
+    <p class="hint" style="margin-top:-8px;">In transit: counts toward the runway from its ETA date. Landed: counts as available now, and its rent-free deadline starts being watched.</p>
+    ${shipment ? fieldHtml('Drawn down so far (auto)', `<input type="number" inputmode="decimal" id="f_drawnDown" value="${d.drawnDown}">`) : ''}
+    ${shipment ? `<p class="hint" style="margin-top:-8px;">Updated automatically when you send orders to this supplier. Only change it by hand to correct something — e.g. after revising a sent order.</p>` : ''}
+    ${fieldHtml('Notes (optional)', `<textarea id="f_notes" rows="3" placeholder="Anything else worth remembering about this batch">${escapeHtml(d.notes)}</textarea>`)}
+    ${!canSave ? '<p class="warn-hint">Enter a quantity to save.</p>' : ''}
+    <div class="row gap2 mt2">
+      <button data-close-modal class="btn" style="background:var(--tint);color:var(--muted);width:auto;padding:10px 16px;">Cancel</button>
+      <button data-save-shipment class="btn btn-primary flex1" ${!canSave ? 'disabled' : ''}>Save</button>
+      ${shipment ? `<button data-delete-shipment="${shipment.id}" class="btn" style="background:var(--red-bg);color:var(--red-text);width:auto;padding:10px 16px;">${icon('trash', 16, 'var(--red-text)')}</button>` : ''}
+    </div>`;
+
+  return modalShell(shipment ? 'Edit shipment' : 'Add shipment', body);
+}
+
+function saveShipment(data) {
+  if (data.id) updateShipments(state.shipments.map((s) => (s.id === data.id ? data : s)));
+  else updateShipments([...state.shipments, { ...data, id: uid() }]);
+  closeModal();
+}
+function deleteShipment(id) {
+  updateShipments(state.shipments.filter((s) => s.id !== id));
+  closeModal();
+}
+
+/* ============================================================
+   DRAWDOWN ENGINE — links the Orders flow to Key SKU shipments.
+
+   When an order is SENT: for each line whose item is a Key SKU, the qty is
+   deducted from that supplier's LANDED shipments of that item (earliest
+   rent-free deadline first — matches how cold stores release stock and
+   minimizes rent). What was deducted is recorded on the order itself, so
+   UNDO can re-credit exactly. Revised orders deliberately do NOT auto-adjust
+   (v1 scope) — the "drawn down" field on the shipment edit form is the
+   manual escape hatch for those rarer cases.
+   ============================================================ */
+function shipmentRemaining(s) {
+  return Math.max(0, (Number(s.quantity) || 0) - (Number(s.drawnDown) || 0));
+}
+
+function applyDrawdownsForOrder(order) {
+  const drawdowns = []; // { shipmentId, qty }
+  let shipments = state.shipments.map((s) => ({ ...s }));
+  order.items.forEach((line) => {
+    const item = state.items.find((i) => i.id === line.itemId);
+    if (!item || !item.keySku) return;
+    let toDraw = Number(line.qty) || 0;
+    if (toDraw <= 0) return;
+    const candidates = shipments
+      .filter((s) => s.itemId === item.id && s.received && s.supplierId === order.supplierId && shipmentRemaining(s) > 0)
+      .sort((a, b) => (a.rentFreeDeadline || '9999-99-99').localeCompare(b.rentFreeDeadline || '9999-99-99'));
+    for (const s of candidates) {
+      if (toDraw <= 0) break;
+      const take = Math.min(shipmentRemaining(s), toDraw);
+      s.drawnDown = (Number(s.drawnDown) || 0) + take;
+      if (shipmentRemaining(s) <= 0 && !s.finishedAt) s.finishedAt = todayStr();
+      drawdowns.push({ shipmentId: s.id, qty: take });
+      toDraw -= take;
+    }
+    // If toDraw is still > 0 here, the rest is a spot purchase / no held stock —
+    // nothing further to deduct, which is correct.
+  });
+  if (drawdowns.length) updateShipments(shipments);
+  return drawdowns;
+}
+
+function revertDrawdownsForOrder(order) {
+  if (!order.drawdowns || !order.drawdowns.length) return;
+  updateShipments(state.shipments.map((s) => {
+    const credit = order.drawdowns
+      .filter((d) => d.shipmentId === s.id)
+      .reduce((sum, d) => sum + (Number(d.qty) || 0), 0);
+    if (!credit) return s;
+    const next = { ...s, drawnDown: Math.max(0, (Number(s.drawnDown) || 0) - credit) };
+    if (shipmentRemaining(next) > 0) delete next.finishedAt;
+    return next;
+  }));
+}
+
+/* ---- Auto burn rate: average daily order quantity over the last 60 days.
+   Falls back to the item's manual dailyBurn when there's no order history. ---- */
+const BURN_WINDOW_DAYS = 60;
+function autoBurnRate(itemId) {
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - BURN_WINDOW_DAYS);
+  const cutoffStr = toLocalDateStr(cutoff);
+  const total = state.orders.reduce((sum, o) => {
+    const d = o.expectedDate || (o.placedAt ? toLocalDateStr(new Date(o.placedAt)) : '');
+    if (!d || d < cutoffStr || d > todayStr()) return sum;
+    const line = o.items.find((l) => l.itemId === itemId);
+    return sum + (line ? (Number(line.qty) || 0) : 0);
+  }, 0);
+  return total > 0 ? total / BURN_WINDOW_DAYS : 0;
+}
+
+/* ---- Burn rate.
+   Currently MANUAL ONLY — the figure you set on the item form.
+
+   autoBurnRate() below is kept but deliberately unused. It divides total
+   ordered by a fixed 60-day window, which is only meaningful once ~60 days of
+   real order history exists. Before that it badly understates burn (one order
+   of 10 today would read as 0.17/day) and, worse, would silently override the
+   manual figure with a wrong-but-plausible number. Switch it on once there's
+   genuine history — and make it divide by the days of history actually
+   present, not a hardcoded 60. ---- */
+function effectiveBurn(item) {
+  return Number(item.dailyBurn) || 0;
+}
+
+/* ---- Data pruning: keeps localStorage lean so the app stays fast for years.
+   Orders older than 90 days are removed (burn calc only needs 60); finished
+   shipments are hidden immediately and fully deleted 7 days after finishing.
+   Long-term history lives in your JSON backups, not on the phone. ---- */
+const ORDER_RETENTION_DAYS = 90;
+const FINISHED_SHIPMENT_RETENTION_DAYS = 7;
+function pruneOldData() {
+  const orderCutoff = new Date();
+  orderCutoff.setDate(orderCutoff.getDate() - ORDER_RETENTION_DAYS);
+  const orderCutoffStr = toLocalDateStr(orderCutoff);
+  const keptOrders = state.orders.filter((o) => {
+    const d = o.expectedDate || (o.placedAt ? toLocalDateStr(new Date(o.placedAt)) : todayStr());
+    return d >= orderCutoffStr;
+  });
+  if (keptOrders.length !== state.orders.length) updateOrders(keptOrders);
+
+  const shipCutoff = new Date();
+  shipCutoff.setDate(shipCutoff.getDate() - FINISHED_SHIPMENT_RETENTION_DAYS);
+  const shipCutoffStr = toLocalDateStr(shipCutoff);
+  const keptShipments = state.shipments.filter((s) => !s.finishedAt || s.finishedAt >= shipCutoffStr);
+  if (keptShipments.length !== state.shipments.length) updateShipments(keptShipments);
+}
+
+
+/* ============================================================
    SUPPLIERS TAB (+ collapsible Warehouses subsection, driver messages)
    ============================================================ */
 function renderSuppliersTab() {
@@ -1212,7 +1915,9 @@ function openModal(modal) {
   renderModal();
 }
 function closeModal() {
+  const returnTo = state.modal && state.modal.returnTo;
   state.modal = null;
+  if (returnTo) { openModal(returnTo); return; }
   document.getElementById('modalRoot').innerHTML = '';
   renderTab(); // underlying data likely changed
 }
@@ -1224,6 +1929,8 @@ function renderModal() {
   else if (m.type === 'supplier') root.innerHTML = renderSupplierForm(m);
   else if (m.type === 'warehouse') root.innerHTML = renderWarehouseForm(m);
   else if (m.type === 'driver') root.innerHTML = renderDriverMessageModal();
+  else if (m.type === 'shipment') root.innerHTML = renderShipmentForm(m);
+  else if (m.type === 'runwayDetail') root.innerHTML = renderRunwayDetailModal(m);
   wireModalEvents();
 }
 
@@ -1289,6 +1996,13 @@ function renderItemForm(m) {
       <span class="text-sm">Inactive — don't show this on the Orders tab</span>
     </label>
     <p class="hint" style="margin-top:-8px;">Use this for items you've stopped ordering for now. It stays here in Stock so you can switch it back on later, but it's hidden from the daily order list.</p>
+    <label class="row" style="gap:8px;margin-bottom:12px;cursor:pointer;">
+      <input type="checkbox" id="f_keySku" ${d.keySku ? 'checked' : ''}>
+      <span class="text-sm">Track as Key SKU (contracts, rent deadlines, runway)</span>
+    </label>
+    <p class="hint" style="margin-top:-8px;">Turn this on only for items with pre-booked shipments or storage rent to watch. Everything else stays simple — par vs. stock, no extra tracking.</p>
+    ${d.keySku ? fieldHtml('Average daily burn (units/day)', `<input type="number" inputmode="decimal" id="f_dailyBurn" value="${d.dailyBurn}">`) : ''}
+    ${d.keySku ? `<p class="hint" style="margin-top:-8px;">Used to project the runway on the Runway tab — how many days current stock will last.</p>` : ''}
     ${!canSave ? `<p class="warn-hint">${!d.name.trim() ? 'Enter an item name to save.' : 'Choose a supplier to save.'}</p>` : ''}
     <div class="row gap2 mt2">
       <button data-close-modal class="btn" style="background:var(--tint);color:var(--muted);width:auto;padding:10px 16px;">Cancel</button>
@@ -1386,9 +2100,11 @@ function openItemModal(mode, item, insertAfterId) {
     varyByDay: !!(item.parByDay && Object.keys(item.parByDay).length),
     parByDay: item.parByDay || {}, tagsText: (item.tags || []).join(', '),
     defaultWarehouseId: item.defaultWarehouseId || '', inactive: !!item.inactive,
+    keySku: !!item.keySku, dailyBurn: item.dailyBurn ?? 0,
   } : {
     name: '', itemCode: '', supplierId: (state.suppliers[0] && state.suppliers[0].id) || '',
     unit: '件', par: 0, stock: 0, varyByDay: false, parByDay: {}, tagsText: '', defaultWarehouseId: '', inactive: false,
+    keySku: false, dailyBurn: 0,
   };
   openModal({ type: 'item', mode, data: item, insertAfterId: insertAfterId || null, draft });
 }
@@ -1421,6 +2137,10 @@ function refreshItemDraftFromDom() {
   d.varyByDay = document.getElementById('f_varyByDay').checked;
   const inactiveEl = document.getElementById('f_inactive');
   if (inactiveEl) d.inactive = inactiveEl.checked;
+  const keySkuEl = document.getElementById('f_keySku');
+  if (keySkuEl) d.keySku = keySkuEl.checked;
+  const dailyBurnEl = document.getElementById('f_dailyBurn');
+  if (dailyBurnEl) d.dailyBurn = parseFloat(dailyBurnEl.value) || 0;
   if (d.varyByDay) {
     WEEKDAYS.forEach((_, idx) => {
       const el = document.querySelector(`[data-day-par="${idx}"]`);
@@ -1459,6 +2179,7 @@ function onMainClick(e) {
   if (btn.dataset.editItem) { openItemModal('edit', state.items.find((i) => i.id === btn.dataset.editItem)); return; }
   if (btn.dataset.insertItem) { openItemModal('new', null, btn.dataset.insertItem); return; }
   if (btn.hasAttribute('data-open-item-modal')) { openItemModal('new', null); return; }
+  if (btn.dataset.openRunwayDetail) { openModal({ type: 'runwayDetail', itemId: btn.dataset.openRunwayDetail }); return; }
 
   if (btn.dataset.sendSupplier) {
     const group = computeCartGroups().find((g) => g.supplier.id === btn.dataset.sendSupplier);
@@ -1518,6 +2239,7 @@ function onMainInput(e) {
   if (t.dataset && t.dataset.draftQty) { state.draftQty[t.dataset.draftQty] = t.value; return; }
   if (t.id === 'orderSearch') { state.search = t.value; filterOrderListRows(); return; }
   if (t.id === 'stockSearch') { state.stockSearch = t.value; filterStockRows(); return; }
+  if (t.id === 'runwaySearch') { state.runwaySearch = t.value; filterRunwayRows(); return; }
 }
 
 function onMainChange(e) {
@@ -1580,6 +2302,7 @@ function onModalClick(e) {
       name: d.name.trim(), itemCode: d.itemCode.trim(), supplierId: d.supplierId,
       unit: d.unit.trim(), par: d.par, stock: d.stock, parByDay: cleanParByDay, tags,
       defaultWarehouseId: d.defaultWarehouseId, inactive: !!d.inactive, insertAfterId: state.modal.insertAfterId,
+      keySku: !!d.keySku, dailyBurn: d.dailyBurn || 0,
     });
     return;
   }
@@ -1618,6 +2341,45 @@ function onModalClick(e) {
     });
     return;
   }
+
+  if (btn && btn.hasAttribute('data-save-shipment')) {
+    const d = state.modal.draft;
+    if (!(Number(d.quantity) > 0)) return;
+    const next = {
+      id: state.modal.data ? state.modal.data.id : undefined,
+      itemId: d.itemId, header: (d.header || '').trim(), supplierId: d.supplierId || '',
+      askingPrice: d.askingPrice === '' ? null : Number(d.askingPrice) || 0,
+      quantity: Number(d.quantity) || 0,
+      etaDate: d.etaDate, rentFreeDeadline: d.rentFreeDeadline, received: !!d.received,
+      notes: (d.notes || '').trim(),
+      drawnDown: Number(d.drawnDown) || 0,
+    };
+    // Keep the finished flag consistent with the numbers after a manual edit.
+    if (shipmentRemaining(next) <= 0) next.finishedAt = (state.modal.data && state.modal.data.finishedAt) || todayStr();
+    saveShipment(next);
+    return;
+  }
+  if (btn && btn.dataset.deleteShipment) { deleteShipment(btn.dataset.deleteShipment); return; }
+  if (btn && btn.dataset.addShipment) {
+    const itemId = btn.dataset.addShipment;
+    openShipmentModal('new', null, itemId, { type: 'runwayDetail', itemId });
+    return;
+  }
+  if (btn && btn.dataset.editShipment) {
+    const shipment = state.shipments.find((s) => s.id === btn.dataset.editShipment);
+    if (shipment) openShipmentModal('edit', shipment, shipment.itemId, { type: 'runwayDetail', itemId: shipment.itemId });
+    return;
+  }
+  if (btn && btn.dataset.toggleReceived) {
+    const s = state.shipments.find((x) => x.id === btn.dataset.toggleReceived);
+    if (s) {
+      updateShipments(state.shipments.map((x) => (x.id === s.id
+        ? { ...x, received: !x.received, receivedDate: !x.received ? todayStr() : null }
+        : x)));
+      renderModal(); // stay on the same detail view, just refresh it
+    }
+    return;
+  }
 }
 
 function onModalInput(e) {
@@ -1643,6 +2405,7 @@ function updateSaveButtonState() {
   if (type === 'item') { canSave = !!(d.name && d.name.trim() && d.supplierId); selector = '[data-save-item]'; }
   else if (type === 'supplier') { canSave = !!(d.name && d.name.trim()); selector = '[data-save-supplier]'; }
   else if (type === 'warehouse') { canSave = !!(d.name && d.name.trim()); selector = '[data-save-warehouse]'; }
+  else if (type === 'shipment') { canSave = !!(d && Number(d.quantity) > 0); selector = '[data-save-shipment]'; }
   else return;
   const btn = modalRoot.querySelector(selector);
   if (btn) btn.disabled = !canSave;
@@ -1659,12 +2422,21 @@ function onModalChange(e) {
   const t = e.target;
   if (!state.modal) return;
   if (t.id === 'f_varyByDay') { refreshItemDraftFromDom(); renderModal(); return; }
+  if (t.id === 'f_keySku' && state.modal.type === 'item') { refreshItemDraftFromDom(); renderModal(); return; }
   if (t.id === 'f_supplierId' && state.modal.type === 'item') { refreshItemDraftFromDom(); renderModal(); return; }
+  if (t.dataset && t.dataset.stockAvailableFor) {
+    const id = t.dataset.stockAvailableFor;
+    const val = parseFloat(t.value) || 0;
+    updateItems(state.items.map((i) => (i.id === id ? { ...i, stockAvailable: val } : i)));
+    renderModal(); // refresh alerts/chart/runway using the new figure, stay on this detail view
+    return;
+  }
 }
 
 /* ============================================================
    BOOTSTRAP
    ============================================================ */
+pruneOldData(); // trim orders >90 days old and long-finished shipments, keeps the app fast
 initEventListeners();
 setTab('today');
 
