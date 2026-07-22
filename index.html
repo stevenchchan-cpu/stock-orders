@@ -350,6 +350,9 @@ const state = {
   selectedWarehousesForDriverMsg: [],
   stockSearch: '',
   runwaySearch: '',
+  cartSearch: '',
+  runwayRisk: 'all',    // all | gap | rent
+  runwayMonth: 'all',   // all | YYYY-MM (next 6 months)
   incomingFilterDate: '',
   incomingCumulative: false,
   modal: null,               // { type: 'item'|'supplier'|'warehouse', mode:'new'|'edit', data, insertAfterId }
@@ -522,15 +525,36 @@ function cancelOrder(order) {
   renderTab();
 }
 
+/* Any post-send revision goes through here so Key SKU drawdowns stay honest.
+   The order's recorded drawdowns are put back first, the change is applied,
+   then drawdowns are recomputed from the new quantities. Recompute rather than
+   patch: reuses the same tested apply/revert pair, and can't drift.
+   (Previously revisions left drawdowns at the ORIGINAL amounts, and revising
+   an order down to zero lines deleted it while leaving its stock permanently
+   marked as drawn — a leak with no way back short of editing by hand.) */
+function reviseOrderItems(orderId, nextItemsFn) {
+  const order = state.orders.find((o) => o.id === orderId);
+  if (!order) return;
+  revertDrawdownsForOrder(order);
+  const nextItems = nextItemsFn(order.items);
+  if (nextItems.length === 0) {
+    updateOrders(state.orders.filter((o) => o.id !== orderId));
+    state.revisingOrderId = null;
+    return;
+  }
+  const updated = { ...order, items: nextItems };
+  updated.drawdowns = applyDrawdownsForOrder(updated);
+  updateOrders(state.orders.map((o) => (o.id === orderId ? updated : o)));
+}
+
 function setOrderLineQty(orderId, itemIndex, qty) {
   if (!qty || qty <= 0) { removeOrderLine(orderId, itemIndex); return; }
-  updateOrders(state.orders.map((o) => {
-    if (o.id !== orderId) return o;
-    return { ...o, items: o.items.map((line, idx) => (idx === itemIndex ? { ...line, qty } : line)) };
-  }));
+  reviseOrderItems(orderId, (items) =>
+    items.map((line, idx) => (idx === itemIndex ? { ...line, qty } : line)));
 }
 
 function setOrderLinePickupWarehouse(orderId, itemIndex, warehouseId) {
+  // Pickup location only — no quantity change, so drawdowns are unaffected.
   updateOrders(state.orders.map((o) => {
     if (o.id !== orderId) return o;
     return { ...o, items: o.items.map((line, idx) => (idx === itemIndex ? { ...line, pickupWarehouseId: warehouseId } : line)) };
@@ -538,15 +562,7 @@ function setOrderLinePickupWarehouse(orderId, itemIndex, warehouseId) {
 }
 
 function removeOrderLine(orderId, itemIndex) {
-  const order = state.orders.find((o) => o.id === orderId);
-  if (!order) return;
-  const remaining = order.items.filter((_, idx) => idx !== itemIndex);
-  if (remaining.length === 0) {
-    updateOrders(state.orders.filter((o) => o.id !== orderId));
-    state.revisingOrderId = null;
-  } else {
-    updateOrders(state.orders.map((o) => (o.id === orderId ? { ...o, items: remaining } : o)));
-  }
+  reviseOrderItems(orderId, (items) => items.filter((_, idx) => idx !== itemIndex));
 }
 
 /* ---- suppliers / items / warehouses CRUD ---- */
@@ -566,7 +582,11 @@ function deleteSupplier(id) {
 function saveItem(data) {
   const { insertAfterId, ...rest } = data;
   if (rest.id) {
-    updateItems(state.items.map((i) => (i.id === rest.id ? rest : i)));
+    // MERGE, don't replace. The item form only knows about its own fields, so
+    // replacing wholesale would silently wipe anything set elsewhere — e.g.
+    // "Other stock" on the Runway tab. Merging keeps unknown fields safe and
+    // means new fields added later can't be clobbered by an old form.
+    updateItems(state.items.map((i) => (i.id === rest.id ? { ...i, ...rest } : i)));
   } else {
     const newItem = { ...rest, id: uid() };
     if (insertAfterId) {
@@ -705,7 +725,7 @@ function renderTab() {
   const main = document.getElementById('mainContent');
   document.getElementById('pageTitle').textContent = TABS.find((t) => t.key === state.tab).title;
   if (state.tab === 'today') { main.innerHTML = renderOrdersTab(); filterOrderListRows(); }
-  else if (state.tab === 'cart') main.innerHTML = renderCartTab();
+  else if (state.tab === 'cart') { main.innerHTML = renderCartTab(); filterCartRows(); }
   else if (state.tab === 'stock') { main.innerHTML = renderStockTab(); filterStockRows(); }
   else if (state.tab === 'runway') { main.innerHTML = renderRunwayTab(); filterRunwayRows(); }
   else if (state.tab === 'suppliers') main.innerHTML = renderSuppliersTab();
@@ -727,6 +747,16 @@ const FILTER_FIELDS = [
     key: 'tag', label: 'Tag',
     getOptions: (items) => Array.from(new Set(items.flatMap((it) => it.tags || []))).sort().map((t) => ({ value: t, label: t })),
     matches: (item, value) => (item.tags || []).includes(value),
+  },
+  {
+    key: 'warehouse', label: 'Warehouse',
+    getOptions: (items, suppliers, warehouses) => (warehouses || []).map((w) => ({ value: w.id, label: w.name })),
+    // Pickup location resolves item override -> supplier default, the same way
+    // the order rows and driver collection messages do it.
+    matches: (item, value) => {
+      const supplier = state.suppliers.find((s) => s.id === item.supplierId);
+      return effectivePickupWarehouseId(item, supplier) === value;
+    },
   },
 ];
 
@@ -757,7 +787,7 @@ function renderOrdersTab() {
   }
 
   const incomingBreakdown = computeIncomingBreakdown(state.orders, state.orderDate);
-  const activeFilterFields = FILTER_FIELDS.filter((f) => f.getOptions(state.items, state.suppliers).length > 0);
+  const activeFilterFields = FILTER_FIELDS.filter((f) => f.getOptions(state.items, state.suppliers, state.warehouses).length > 0);
   let activeFilterDef = activeFilterFields.find((f) => f.key === state.filterField) || activeFilterFields[0];
 
   const list = state.items
@@ -782,13 +812,17 @@ function renderOrdersTab() {
       ? `<div class="row wrap" style="gap:4px;margin-top:2px;">${item.tags.map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join('')}</div>` : '';
     const nameLower = item.name.toLowerCase();
     const codeLower = (item.itemCode || '').toLowerCase();
+    const avail = drawdownAvailability(item);
+    const availHtml = avail
+      ? ` · <span style="color:var(--forest);font-weight:600;">${avail.qty} avail${avail.alpha ? ' α' : ''}${avail.beta ? ' β' : ''}</span>`
+      : '';
     return `
       <div class="card" data-order-row data-name="${escapeHtml(nameLower)}" data-code="${escapeHtml(codeLower)}">
         <div class="row" style="gap:10px;">
           <span class="index-badge">#${index}</span>
           <div class="flex1">
             <div class="text-sm truncate" style="font-weight:500;color:var(--ink);">${escapeHtml(item.name)}</div>
-            <div class="text-xs truncate muted">${escapeHtml(supplier ? supplier.name : 'No supplier')} · ${escapeHtml(pickupWarehouse ? pickupWarehouse.name : 'varies')}</div>
+            <div class="text-xs truncate muted">${escapeHtml(supplier ? supplier.name : 'No supplier')} · ${escapeHtml(pickupWarehouse ? pickupWarehouse.name : 'varies')}${availHtml}</div>
             ${tagsHtml}
             ${hasIncoming ? `<div class="text-xs truncate font-mono muted" data-incoming-text>${incomingText}</div>` : ''}
           </div>
@@ -831,7 +865,7 @@ function renderOrdersTab() {
           ${activeFilterDef ? `
             <select id="filterValueSelect" style="width:auto;font-size:13px;padding:6px 8px;">
               <option value="">All ${activeFilterDef.label.toLowerCase()}s</option>
-              ${activeFilterDef.getOptions(state.items, state.suppliers).map((o) => `<option value="${escapeHtml(o.value)}" ${o.value === state.filterValue ? 'selected' : ''}>${escapeHtml(o.label)}</option>`).join('')}
+              ${activeFilterDef.getOptions(state.items, state.suppliers, state.warehouses).map((o) => `<option value="${escapeHtml(o.value)}" ${o.value === state.filterValue ? 'selected' : ''}>${escapeHtml(o.label)}</option>`).join('')}
             </select>` : ''}
           ${(state.filterValue || state.search || state.onlyOrderedForDate) ? `<button id="clearFiltersBtn" class="text-xs" style="font-weight:500;color:var(--amber-strong);">Clear filters</button>` : ''}
         </div>
@@ -908,6 +942,43 @@ function renderCartTab() {
         </section>` : ''}
       ${renderIncomingSection(incomingOrders)}
     </div>`;
+}
+
+// Fast show/hide filter for the incoming orders list (same pattern as Stock
+// and Runway) — keeps focus in the search box while typing. Also hides a date
+// heading once all orders under it are filtered out.
+function filterCartRows() {
+  const q = state.cartSearch.trim().toLowerCase();
+  let anyVisible = false;
+  document.querySelectorAll('[data-cart-order]').forEach((el) => {
+    const match = !q || (el.dataset.haystack || '').includes(q);
+    el.classList.toggle('hidden', !match);
+    if (match) anyVisible = true;
+  });
+  document.querySelectorAll('[data-cart-date-group]').forEach((group) => {
+    const visible = group.querySelectorAll('[data-cart-order]:not(.hidden)').length;
+    group.classList.toggle('hidden', visible === 0);
+  });
+  const noMatches = document.getElementById('cartNoMatches');
+  if (noMatches) noMatches.classList.toggle('hidden', anyVisible || !q);
+}
+
+// Keeps the "Add all to cart" button in sync as quantities are typed. Updates
+// the button in place rather than re-rendering the tab, so the keyboard and
+// focus stay where they are. (Previously the button only recalculated on a
+// full render, so it could sit greyed out even with quantities entered.)
+function updateAddAllButton() {
+  const btn = document.getElementById('addAllBtn');
+  if (!btn) return;
+  const count = Object.values(state.draftQty).filter((v) => parseFloat(v) > 0).length;
+  const on = count > 0;
+  btn.disabled = !on;
+  btn.style.background = on ? 'var(--forest)' : 'var(--border)';
+  btn.style.color = on ? '#fff' : 'var(--faint)';
+  const label = document.getElementById('addAllLabel');
+  if (label) label.textContent = `Add all${on ? ` (${count})` : ''} to cart`;
+  const svg = btn.querySelector('svg');
+  if (svg) svg.setAttribute('stroke', on ? '#fff' : 'var(--faint)');
 }
 
 function renderPickupLocationsSummary() {
@@ -996,6 +1067,7 @@ function renderCartLineRow(l, supplierIdForCard) {
 
 function renderIncomingSection(incomingOrders) {
   if (incomingOrders.length === 0) return '';
+
   const availableDates = Array.from(new Set(incomingOrders.map((o) => o.expectedDate || todayStr()))).sort();
   const visibleDates = !state.incomingFilterDate
     ? availableDates
@@ -1007,6 +1079,7 @@ function renderIncomingSection(incomingOrders) {
     <section class="section">
       <div class="section-label">Incoming — already ordered</div>
       <p class="text-xs faint mb2">These drop off automatically once their delivery day has passed, so they won't get double-ordered.</p>
+      <input type="search" id="cartSearch" placeholder="Search supplier, item, or code…" value="${escapeHtml(state.cartSearch)}" class="mb2">
       <div class="row wrap gap2 mb2">
         <select id="incomingFilterDateSelect" style="width:auto;font-size:13px;padding:6px 8px;">
           <option value="">All upcoming dates</option>
@@ -1018,16 +1091,25 @@ function renderIncomingSection(incomingOrders) {
             <button data-incoming-mode="through" class="${state.incomingCumulative ? 'active' : ''}">Through that date</button>
           </div>` : ''}
       </div>
+      <p id="cartNoMatches" class="text-sm muted hidden" style="padding:14px 0;text-align:center;">No incoming orders match that search.</p>
       ${visibleDates.map((dateStr) => {
         const group = incomingOrders.filter((o) => (o.expectedDate || todayStr()) === dateStr);
         return `
-          <div class="mb2">
+          <div class="mb2" data-cart-date-group>
             <div class="text-xs" style="font-weight:500;margin-bottom:6px;color:var(--forest);">Expected ${formatDateLabel(dateStr)}</div>
             <div style="display:flex;flex-direction:column;gap:8px;">
               ${group.map((o) => {
                 const isRevising = state.revisingOrderId === o.id;
+                // Searchable haystack: supplier + every line's name and code.
+                const haystack = [
+                  o.supplierName || '',
+                  ...(o.items || []).map((l) => {
+                    const it = state.items.find((i) => i.id === l.itemId);
+                    return `${l.name || ''} ${it && it.itemCode ? it.itemCode : ''}`;
+                  }),
+                ].join(' ').toLowerCase();
                 return `
-                <div class="card">
+                <div class="card" data-cart-order data-haystack="${escapeHtml(haystack)}">
                   <div class="row-between">
                     <div class="text-sm" style="font-weight:500;color:var(--ink);">${escapeHtml(o.supplierName)}</div>
                     <div class="row" style="gap:6px;">
@@ -1408,6 +1490,37 @@ function renderCoverageBar(sim, opts = {}) {
   </svg>`;
 }
 
+// Which calendar months (YYYY-MM) each risk lands in, for the Runway filters.
+// Built from the same coverage segments the bar draws, so filter and bar can
+// never disagree.
+function riskMonths(sim) {
+  const out = { gap: new Set(), rent: new Set() };
+  coverageSegments(sim).forEach((seg) => {
+    if (seg.state === 'covered') return;
+    const key = seg.state === 'gap' ? 'gap' : 'rent';
+    for (let d = seg.from; d <= seg.to; d++) {
+      const dt = new Date();
+      dt.setDate(dt.getDate() + d);
+      out[key].add(`${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}`);
+    }
+  });
+  return out;
+}
+
+// The next 6 months as {key, label} for the month filter.
+function upcomingMonths(n = 6) {
+  const list = [];
+  const now = new Date();
+  for (let i = 0; i < n; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+    list.push({
+      key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`,
+      label: d.toLocaleDateString(undefined, { month: 'short', year: '2-digit' }),
+    });
+  }
+  return list;
+}
+
 const RUNWAY_LEVEL_META = {
   stockout: { label: 'Stockout', bg: 'var(--red-bg)', text: 'var(--red-text)' },
   rent: { label: 'Rent risk', bg: 'var(--amber-bg)', text: 'var(--amber-text)' },
@@ -1424,8 +1537,36 @@ function renderRunwayTab() {
     return renderEmptyState('No Key SKUs yet', 'Open a stock item and tick "Track as Key SKU" to start watching its contracts and rent deadlines here.');
   }
   const levelOrder = { stockout: 0, rent: 1, gap: 2, ok: 3 };
-  const rowsData = keyItems.map((item) => ({ item, status: keySkuStatus(item) }))
+  const allRows = keyItems.map((item) => ({ item, status: keySkuStatus(item) }))
     .sort((a, b) => levelOrder[a.status.level] - levelOrder[b.status.level]);
+
+  // Risk + month filters. An item shows if it has the selected risk type, and
+  // (when a month is picked) that risk actually lands in that month.
+  const rowsData = allRows.filter(({ status }) => {
+    if (state.runwayRisk === 'all' && state.runwayMonth === 'all') return true;
+    const months = riskMonths(status.sim);
+    const wanted = state.runwayRisk === 'all' ? ['gap', 'rent'] : [state.runwayRisk];
+    return wanted.some((k) => {
+      if (months[k].size === 0) return false;
+      return state.runwayMonth === 'all' || months[k].has(state.runwayMonth);
+    });
+  });
+
+  const filtersActive = state.runwayRisk !== 'all' || state.runwayMonth !== 'all';
+  const chip = (active, label, attr) =>
+    `<button ${attr} class="btn-sm" style="background:${active ? 'var(--ink)' : 'var(--tint)'};color:${active ? '#fff' : 'var(--muted)'};font-weight:${active ? '600' : '400'};">${label}</button>`;
+
+  const filterBar = `
+    <div class="row wrap gap2 mb2" style="align-items:center;">
+      ${chip(state.runwayRisk === 'all', 'All risks', 'data-runway-risk="all"')}
+      ${chip(state.runwayRisk === 'gap', 'Stockout', 'data-runway-risk="gap"')}
+      ${chip(state.runwayRisk === 'rent', 'Rent risk', 'data-runway-risk="rent"')}
+      <select id="runwayMonth" style="width:auto;padding:6px 10px;font-size:13px;">
+        <option value="all" ${state.runwayMonth === 'all' ? 'selected' : ''}>Any month</option>
+        ${upcomingMonths(6).map((m) => `<option value="${m.key}" ${state.runwayMonth === m.key ? 'selected' : ''}>${m.label}</option>`).join('')}
+      </select>
+      ${filtersActive ? `<button data-runway-clear-filters class="btn-sm" style="background:var(--tint);color:var(--muted);">Clear</button>` : ''}
+    </div>`;
 
   const rows = rowsData.map(({ item, status }) => {
     const meta = RUNWAY_LEVEL_META[status.level];
@@ -1471,12 +1612,15 @@ function renderRunwayTab() {
   return `
     <div>
       <input type="search" id="runwaySearch" placeholder="Search item name or code…" value="${escapeHtml(state.runwaySearch)}" class="mb2">
+      ${filterBar}
       <div class="row wrap" style="gap:12px;margin-bottom:10px;">
         <span class="text-xs row" style="gap:4px;align-items:center;"><span style="width:10px;height:10px;border-radius:2px;background:var(--forest);opacity:.85;display:inline-block;"></span> Covered</span>
         <span class="text-xs row" style="gap:4px;align-items:center;"><span style="width:10px;height:10px;border-radius:2px;background:var(--amber-strong);display:inline-block;"></span> Rent accruing</span>
         <span class="text-xs row" style="gap:4px;align-items:center;"><span style="width:10px;height:10px;border-radius:2px;background:#C0503A;display:inline-block;"></span> No stock</span>
       </div>
-      <div style="display:flex;flex-direction:column;gap:8px;">${rows}</div>
+      ${rowsData.length === 0
+        ? `<p class="text-sm muted" style="padding:20px 0;text-align:center;">No Key SKUs with that risk in that month.</p>`
+        : `<div style="display:flex;flex-direction:column;gap:8px;">${rows}</div>`}
       <p id="runwayNoMatches" class="text-sm muted hidden" style="padding:16px 0;text-align:center;">No Key SKUs match that search.</p>
       ${scaleSim ? `<div style="margin-top:2px;padding:0 12px;">${renderCoverageBar(scaleSim, { height: 0, showMonths: true })}</div>` : ''}
       <p class="text-xs faint" style="margin-top:10px;">Bars span the next 5 months on a shared scale — a gap in August sits in the same place on every row. Tap an item for the dated breakdown.</p>
@@ -1588,7 +1732,7 @@ function renderRunwayDetailModal(m) {
         <div class="row" style="gap:8px;">
           <button data-edit-shipment="${s.id}" class="flex1" style="text-align:left;min-width:0;">
             <div class="text-sm truncate" style="font-weight:600;">${s.header ? escapeHtml(s.header) : (supplier ? escapeHtml(supplier.name) : 'Shipment')}</div>
-            <div class="text-xs muted truncate">${b.qty}${unitStr} left of ${s.quantity}${s.askingPrice ? ` · $${s.askingPrice}` : ''}${supplier && s.header ? ' · ' + escapeHtml(supplier.name) : ''}</div>
+            <div class="text-xs muted truncate">${physicalRemaining(s)}${unitStr} left of ${s.quantity}${s.askingPrice ? ` · $${s.askingPrice}` : ''}${supplier && s.header ? ' · ' + escapeHtml(supplier.name) : ''}</div>
           </button>
           <button data-toggle-received="${s.id}" class="btn-sm shrink0" style="background:${landed ? 'var(--green)' : 'var(--tint)'};color:${landed ? 'var(--forest)' : '#3B7EA1'};">${landed ? 'Landed' : 'In transit'}</button>
         </div>
@@ -1616,6 +1760,11 @@ function renderRunwayDetailModal(m) {
         <div class="text-xs muted mb1">Other stock</div>
         <input type="number" inputmode="decimal" data-stock-available-for="${item.id}" value="${item.stockAvailable ?? 0}" class="font-mono"
           style="width:66px;padding:6px 8px;border-radius:8px;border:1.5px solid var(--forest);background:#F2F7F5;color:var(--forest);font-weight:700;font-size:15px;">
+      </div>
+      <div>
+        <div class="text-xs muted mb1">Burn /day</div>
+        <input type="number" inputmode="decimal" data-daily-burn-for="${item.id}" value="${item.dailyBurn ?? 0}" class="font-mono"
+          style="width:62px;padding:6px 8px;border-radius:8px;border:1.5px solid var(--forest);background:#F2F7F5;color:var(--forest);font-weight:700;font-size:15px;">
       </div>
       <div><div class="text-xs muted">At warehouse</div><div class="font-mono text-sm" style="font-weight:700;">${atWarehouse}</div></div>
       ${inTransitNow > 0 ? `<div><div class="text-xs muted">In transit</div><div class="font-mono text-sm" style="font-weight:700;color:#3B7EA1;">${inTransitNow}</div></div>` : ''}
@@ -1686,7 +1835,13 @@ function renderShipmentForm(m) {
     </label>
     <p class="hint" style="margin-top:-8px;">In transit: counts toward the runway from its ETA date. Landed: counts as available now, and its rent-free deadline starts being watched.</p>
     ${shipment ? fieldHtml('Drawn down so far (auto)', `<input type="number" inputmode="decimal" id="f_drawnDown" value="${d.drawnDown}">`) : ''}
-    ${shipment ? `<p class="hint" style="margin-top:-8px;">Updated automatically when you send orders to this supplier. Only change it by hand to correct something — e.g. after revising a sent order.</p>` : ''}
+    ${shipment ? (() => {
+      const claimed = pendingDrawdownForShipment(shipment.id);
+      return `<p class="hint" style="margin-top:-8px;">Updated automatically as you send, revise, or undo orders to this supplier. Only change it by hand to correct a discrepancy.${
+        claimed > 0
+          ? ` <strong>${claimed} of this figure is from pending orders not yet collected</strong> — if you undo one of those, that amount comes back automatically, so don't subtract it here as well.`
+          : ''}</p>`;
+    })() : ''}
     ${fieldHtml('Notes (optional)', `<textarea id="f_notes" rows="3" placeholder="Anything else worth remembering about this batch">${escapeHtml(d.notes)}</textarea>`)}
     ${!canSave ? '<p class="warn-hint">Enter a quantity to save.</p>' : ''}
     <div class="row gap2 mt2">
@@ -1699,8 +1854,14 @@ function renderShipmentForm(m) {
 }
 
 function saveShipment(data) {
-  if (data.id) updateShipments(state.shipments.map((s) => (s.id === data.id ? data : s)));
-  else updateShipments([...state.shipments, { ...data, id: uid() }]);
+  if (data.id) {
+    // Merge for the same reason as saveItem — keeps fields the form doesn't
+    // carry (e.g. receivedDate). finishedAt is passed explicitly as null by
+    // the caller when the batch still has stock, so a stale flag can't linger.
+    updateShipments(state.shipments.map((s) => (s.id === data.id ? { ...s, ...data } : s)));
+  } else {
+    updateShipments([...state.shipments, { ...data, id: uid() }]);
+  }
   closeModal();
 }
 function deleteShipment(id) {
@@ -1721,6 +1882,34 @@ function deleteShipment(id) {
    ============================================================ */
 function shipmentRemaining(s) {
   return Math.max(0, (Number(s.quantity) || 0) - (Number(s.drawnDown) || 0));
+}
+
+/* What's drawable for an item right now, for the Orders tab line.
+   Deliberately narrow so the number is unambiguous:
+   - LANDED only. In-transit stock can't be collected, so it isn't offered.
+   - ONE batch — the one an order placed now would actually hit first
+     (earliest rent-free deadline, same rule as applyDrawdownsForOrder).
+   - Already net of pending orders, since shipmentRemaining subtracts their
+     drawdowns — so it's what's genuinely still claimable, not gross stock.
+   Markers flag what's behind it: alpha = another batch from the same
+   supplier, beta = a different supplier also holds drawable stock. */
+function drawdownAvailability(item) {
+  if (!item || !item.keySku) return null; // only Key SKUs draw down
+  const landed = state.shipments.filter(
+    (s) => s.itemId === item.id && s.received && shipmentRemaining(s) > 0
+  );
+  if (landed.length === 0) return null;
+
+  const byDeadline = (a, b) =>
+    (a.rentFreeDeadline || '9999-99-99').localeCompare(b.rentFreeDeadline || '9999-99-99');
+  const own = landed.filter((s) => s.supplierId === item.supplierId).sort(byDeadline);
+  const others = landed.filter((s) => s.supplierId !== item.supplierId);
+
+  return {
+    qty: own.length ? shipmentRemaining(own[0]) : 0,
+    alpha: own.length > 1,      // another batch from this supplier
+    beta: others.length > 0,    // another supplier holds stock too
+  };
 }
 
 function applyDrawdownsForOrder(order) {
@@ -2001,8 +2190,7 @@ function renderItemForm(m) {
       <span class="text-sm">Track as Key SKU (contracts, rent deadlines, runway)</span>
     </label>
     <p class="hint" style="margin-top:-8px;">Turn this on only for items with pre-booked shipments or storage rent to watch. Everything else stays simple — par vs. stock, no extra tracking.</p>
-    ${d.keySku ? fieldHtml('Average daily burn (units/day)', `<input type="number" inputmode="decimal" id="f_dailyBurn" value="${d.dailyBurn}">`) : ''}
-    ${d.keySku ? `<p class="hint" style="margin-top:-8px;">Used to project the runway on the Runway tab — how many days current stock will last.</p>` : ''}
+    ${d.keySku ? `<p class="hint" style="margin-top:-8px;">Set the daily burn rate on the Runway tab, where you can see its effect as you adjust it.</p>` : ''}
     ${!canSave ? `<p class="warn-hint">${!d.name.trim() ? 'Enter an item name to save.' : 'Choose a supplier to save.'}</p>` : ''}
     <div class="row gap2 mt2">
       <button data-close-modal class="btn" style="background:var(--tint);color:var(--muted);width:auto;padding:10px 16px;">Cancel</button>
@@ -2179,6 +2367,8 @@ function onMainClick(e) {
   if (btn.dataset.editItem) { openItemModal('edit', state.items.find((i) => i.id === btn.dataset.editItem)); return; }
   if (btn.dataset.insertItem) { openItemModal('new', null, btn.dataset.insertItem); return; }
   if (btn.hasAttribute('data-open-item-modal')) { openItemModal('new', null); return; }
+  if (btn.dataset.runwayRisk) { state.runwayRisk = btn.dataset.runwayRisk; renderTab(); return; }
+  if (btn.hasAttribute('data-runway-clear-filters')) { state.runwayRisk = 'all'; state.runwayMonth = 'all'; renderTab(); return; }
   if (btn.dataset.openRunwayDetail) { openModal({ type: 'runwayDetail', itemId: btn.dataset.openRunwayDetail }); return; }
 
   if (btn.dataset.sendSupplier) {
@@ -2236,10 +2426,15 @@ function onMainClick(e) {
 
 function onMainInput(e) {
   const t = e.target;
-  if (t.dataset && t.dataset.draftQty) { state.draftQty[t.dataset.draftQty] = t.value; return; }
+  if (t.dataset && t.dataset.draftQty) {
+    state.draftQty[t.dataset.draftQty] = t.value;
+    updateAddAllButton(); // keep the button live as you type — no re-render, so focus stays put
+    return;
+  }
   if (t.id === 'orderSearch') { state.search = t.value; filterOrderListRows(); return; }
   if (t.id === 'stockSearch') { state.stockSearch = t.value; filterStockRows(); return; }
   if (t.id === 'runwaySearch') { state.runwaySearch = t.value; filterRunwayRows(); return; }
+  if (t.id === 'cartSearch') { state.cartSearch = t.value; filterCartRows(); return; }
 }
 
 function onMainChange(e) {
@@ -2254,6 +2449,7 @@ function onMainChange(e) {
     if (t.value && t.value >= todayStr()) { state.orderDate = t.value; renderTab(); }
     return;
   }
+  if (t.id === 'runwayMonth') { state.runwayMonth = t.value; renderTab(); return; }
   if (t.id === 'filterFieldSelect') { state.filterField = t.value; state.filterValue = ''; renderTab(); return; }
   if (t.id === 'filterValueSelect') { state.filterValue = t.value; renderTab(); return; }
   if (t.id === 'onlyOrderedCheckbox') { state.onlyOrderedForDate = t.checked; renderTab(); return; }
@@ -2355,7 +2551,10 @@ function onModalClick(e) {
       drawnDown: Number(d.drawnDown) || 0,
     };
     // Keep the finished flag consistent with the numbers after a manual edit.
-    if (shipmentRemaining(next) <= 0) next.finishedAt = (state.modal.data && state.modal.data.finishedAt) || todayStr();
+    // Explicit null (not omission) so the merge in saveShipment clears it.
+    next.finishedAt = shipmentRemaining(next) <= 0
+      ? ((state.modal.data && state.modal.data.finishedAt) || todayStr())
+      : null;
     saveShipment(next);
     return;
   }
@@ -2424,6 +2623,13 @@ function onModalChange(e) {
   if (t.id === 'f_varyByDay') { refreshItemDraftFromDom(); renderModal(); return; }
   if (t.id === 'f_keySku' && state.modal.type === 'item') { refreshItemDraftFromDom(); renderModal(); return; }
   if (t.id === 'f_supplierId' && state.modal.type === 'item') { refreshItemDraftFromDom(); renderModal(); return; }
+  if (t.dataset && t.dataset.dailyBurnFor) {
+    const id = t.dataset.dailyBurnFor;
+    const val = parseFloat(t.value) || 0;
+    updateItems(state.items.map((i) => (i.id === id ? { ...i, dailyBurn: val } : i)));
+    renderModal(); // refresh the projection with the new rate, stay on this view
+    return;
+  }
   if (t.dataset && t.dataset.stockAvailableFor) {
     const id = t.dataset.stockAvailableFor;
     const val = parseFloat(t.value) || 0;
