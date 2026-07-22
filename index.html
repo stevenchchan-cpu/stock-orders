@@ -1912,28 +1912,40 @@ function drawdownAvailability(item) {
   };
 }
 
+/* ONE BATCH AT A TIME. An order draws from a single batch per item — the one
+   with the earliest rent-free deadline — and stops there. It never spills into
+   a second contract, even if the order is larger than that batch holds; the
+   excess is simply a spot purchase. You finish one contract, then the next
+   order starts on the following batch.
+   Quantities are aggregated per item first, so splitting the same item across
+   two cart lines can't sneak into a second batch either. */
 function applyDrawdownsForOrder(order) {
   const drawdowns = []; // { shipmentId, qty }
   let shipments = state.shipments.map((s) => ({ ...s }));
+
+  // Aggregate this order's lines per item (cart lines deliberately don't merge).
+  const wanted = new Map();
   order.items.forEach((line) => {
-    const item = state.items.find((i) => i.id === line.itemId);
-    if (!item || !item.keySku) return;
-    let toDraw = Number(line.qty) || 0;
-    if (toDraw <= 0) return;
-    const candidates = shipments
-      .filter((s) => s.itemId === item.id && s.received && s.supplierId === order.supplierId && shipmentRemaining(s) > 0)
-      .sort((a, b) => (a.rentFreeDeadline || '9999-99-99').localeCompare(b.rentFreeDeadline || '9999-99-99'));
-    for (const s of candidates) {
-      if (toDraw <= 0) break;
-      const take = Math.min(shipmentRemaining(s), toDraw);
-      s.drawnDown = (Number(s.drawnDown) || 0) + take;
-      if (shipmentRemaining(s) <= 0 && !s.finishedAt) s.finishedAt = todayStr();
-      drawdowns.push({ shipmentId: s.id, qty: take });
-      toDraw -= take;
-    }
-    // If toDraw is still > 0 here, the rest is a spot purchase / no held stock —
-    // nothing further to deduct, which is correct.
+    const qty = Number(line.qty) || 0;
+    if (qty > 0) wanted.set(line.itemId, (wanted.get(line.itemId) || 0) + qty);
   });
+
+  wanted.forEach((toDraw, itemId) => {
+    const item = state.items.find((i) => i.id === itemId);
+    if (!item || !item.keySku) return;
+    const batch = shipments
+      .filter((s) => s.itemId === item.id && s.received && s.supplierId === order.supplierId && shipmentRemaining(s) > 0)
+      .sort((a, b) => (a.rentFreeDeadline || '9999-99-99').localeCompare(b.rentFreeDeadline || '9999-99-99'))[0];
+    if (!batch) return; // nothing held with this supplier — spot purchase
+
+    const take = Math.min(shipmentRemaining(batch), toDraw);
+    if (take <= 0) return;
+    batch.drawnDown = (Number(batch.drawnDown) || 0) + take;
+    if (shipmentRemaining(batch) <= 0 && !batch.finishedAt) batch.finishedAt = todayStr();
+    drawdowns.push({ shipmentId: batch.id, qty: take });
+    // Anything beyond this batch is NOT taken from the next one — by design.
+  });
+
   if (drawdowns.length) updateShipments(shipments);
   return drawdowns;
 }
