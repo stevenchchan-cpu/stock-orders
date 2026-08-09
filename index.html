@@ -28,7 +28,10 @@
 
   .header { background:var(--forest); padding:20px 20px 14px; position:sticky; top:0; z-index:10; }
   .header .eyebrow { font-size:11px; letter-spacing:.05em; text-transform:uppercase; color:var(--forest-light); }
-  .header h1 { font-size:22px; font-weight:700; color:var(--cream); }
+  .header h1 { font-size:22px; font-weight:700; color:var(--cream); margin-bottom:12px; }
+  .tab-toolbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .tab-toolbar input[type=search] { flex:1; min-width:120px; border:none; }
+  .tab-toolbar .chip-btn { padding:6px 12px; border-radius:999px; font-size:12px; font-weight:600; white-space:nowrap; }
 
   .main { padding:16px; max-width:640px; margin:0 auto; }
   .section { margin-bottom:24px; }
@@ -106,6 +109,7 @@
 <header class="header">
   <div class="eyebrow">Stock &amp; Orders</div>
   <h1 id="pageTitle" class="font-display">Orders</h1>
+  <div id="tabToolbar" class="tab-toolbar" data-hide-when-empty></div>
 </header>
 
 <main class="main" id="mainContent"></main>
@@ -360,6 +364,7 @@ const state = {
   editingSupplierFor: null,  // cart line id
   revisingOrderId: null,     // order id currently open for post-send revision
   scrollPositions: {},       // tab -> last scroll position (session-only, so returning to a tab picks up where you left off)
+  preSearchScroll: {},       // tab -> scroll position from just before a search started (restored when the search is cleared back to empty)
 };
 
 function persist(key) {
@@ -382,6 +387,14 @@ function escapeHtml(str) {
   const d = document.createElement('div');
   d.textContent = str == null ? '' : String(str);
   return d.innerHTML;
+}
+
+// Alphabetical supplier list for anywhere you PICK a supplier from a dropdown
+// (item form, shipment form, cart line override). Locale-aware so Chinese
+// names sort sensibly, not by raw character code. Does NOT touch the
+// Suppliers tab's own management list, which stays in your set order.
+function sortedSuppliers() {
+  return [...state.suppliers].sort((a, b) => (a.name || '').localeCompare(b.name || '', 'zh-Hant'));
 }
 
 /* ============================================================
@@ -438,11 +451,20 @@ function setCartSupplierOverride(lineId, supplierId) {
   updateCart(state.cart.map((c) => {
     if (c.id !== lineId) return c;
     const item = state.items.find((i) => i.id === c.itemId);
-    if (!item || supplierId === item.supplierId) {
-      const { supplierOverride, ...rest } = c;
-      return rest;
-    }
-    return { ...c, supplierOverride: supplierId };
+    const newSupplier = state.suppliers.find((s) => s.id === supplierId);
+    // Moving to a different supplier means it's physically collected from
+    // wherever THAT supplier's stock sits — any previously-set pickup
+    // warehouse (auto or manual) no longer applies, so recompute it fresh.
+    // (Item-level pickup overrides still win here, same as everywhere else —
+    // effectivePickupWarehouseId already checks item.defaultWarehouseId first.)
+    const next = { ...c };
+    const newPickup = effectivePickupWarehouseId(item, newSupplier);
+    if (newPickup) next.pickupWarehouseId = newPickup;
+    else delete next.pickupWarehouseId;
+
+    if (!item || supplierId === item.supplierId) delete next.supplierOverride;
+    else next.supplierOverride = supplierId;
+    return next;
   }));
 }
 
@@ -526,25 +548,120 @@ function cancelOrder(order) {
 }
 
 /* Any post-send revision goes through here so Key SKU drawdowns stay honest.
-   The order's recorded drawdowns are put back first, the change is applied,
-   then drawdowns are recomputed from the new quantities. Recompute rather than
-   patch: reuses the same tested apply/revert pair, and can't drift.
-   (Previously revisions left drawdowns at the ORIGINAL amounts, and revising
-   an order down to zero lines deleted it while leaving its stock permanently
-   marked as drawn — a leak with no way back short of editing by hand.) */
+   IMPORTANT: this adjusts the SAME batch(es) the order originally drew from —
+   it does NOT revert-and-re-pick from scratch. Re-picking against TODAY's
+   shipment list is wrong for anything but a same-day edit: given long lead
+   times (contracts booked months out), the shipment landscape will often have
+   changed by the time an old pending order gets revised — a new batch may
+   have landed, the original may since be the only one with room, etc. Blindly
+   re-running "pick earliest available today" could silently reassign the
+   order onto a batch it never actually touched, corrupting THAT batch's
+   numbers instead. Adjusting the original batch by the delta keeps history
+   intact; only quantity ABOVE what the original batch can still hold spills
+   to a fresh pick (same as a brand-new order would do for that excess). */
 function reviseOrderItems(orderId, nextItemsFn) {
   const order = state.orders.find((o) => o.id === orderId);
   if (!order) return;
-  revertDrawdownsForOrder(order);
+
   const nextItems = nextItemsFn(order.items);
   if (nextItems.length === 0) {
+    revertDrawdownsForOrder(order);
     updateOrders(state.orders.filter((o) => o.id !== orderId));
     state.revisingOrderId = null;
     return;
   }
-  const updated = { ...order, items: nextItems };
-  updated.drawdowns = applyDrawdownsForOrder(updated);
-  updateOrders(state.orders.map((o) => (o.id === orderId ? updated : o)));
+
+  const sumByItem = (items) => {
+    const m = new Map();
+    items.forEach((line) => {
+      const q = Number(line.qty) || 0;
+      if (q > 0) m.set(line.itemId, (m.get(line.itemId) || 0) + q);
+    });
+    return m;
+  };
+  const oldWanted = sumByItem(order.items);
+  const newWanted = sumByItem(nextItems);
+
+  // This order's existing drawdowns, grouped by the item each shipment belongs to.
+  const shipments = state.shipments.map((s) => ({ ...s }));
+  const oldByItem = new Map();
+  (order.drawdowns || []).forEach((dd) => {
+    const sh = shipments.find((s) => s.id === dd.shipmentId);
+    if (!sh) return;
+    if (!oldByItem.has(sh.itemId)) oldByItem.set(sh.itemId, []);
+    oldByItem.get(sh.itemId).push({ ...dd });
+  });
+
+  const nextDrawdowns = [];
+  const allItemIds = new Set([...oldWanted.keys(), ...newWanted.keys()]);
+
+  allItemIds.forEach((itemId) => {
+    const delta = (newWanted.get(itemId) || 0) - (oldWanted.get(itemId) || 0);
+    const existing = oldByItem.get(itemId) || [];
+
+    if (delta === 0) { nextDrawdowns.push(...existing); return; }
+
+    if (delta < 0) {
+      // Give back LIFO: release whatever was drawn most recently first (the
+      // "overflow" batch from an earlier increase), before touching the
+      // original batch. Otherwise a decrease-after-increase would drain the
+      // wrong one back to empty while leaving the overflow batch untouched.
+      let toGiveBack = -delta;
+      const reduced = [...existing].reverse().map((dd) => {
+        if (toGiveBack <= 0) return dd;
+        const sh = shipments.find((s) => s.id === dd.shipmentId);
+        const giveBack = Math.min(dd.qty, toGiveBack);
+        if (sh) {
+          sh.drawnDown = Math.max(0, (Number(sh.drawnDown) || 0) - giveBack);
+          if (shipmentRemaining(sh) > 0) delete sh.finishedAt;
+        }
+        toGiveBack -= giveBack;
+        return { shipmentId: dd.shipmentId, qty: dd.qty - giveBack };
+      });
+      nextDrawdowns.push(...reduced.reverse().filter((dd) => dd.qty > 0));
+      return;
+    }
+
+    // delta > 0: top up the SAME batch(es) first; only the amount that batch
+    // can't hold spills over to a fresh pick (excluding batches already used
+    // by this order, so it can't double-book the same one twice).
+    let toDraw = delta;
+    existing.forEach((dd) => {
+      nextDrawdowns.push({ ...dd });
+      if (toDraw <= 0) return;
+      const sh = shipments.find((s) => s.id === dd.shipmentId);
+      if (!sh) return;
+      const room = shipmentRemaining(sh);
+      if (room <= 0) return;
+      const take = Math.min(room, toDraw);
+      sh.drawnDown = (Number(sh.drawnDown) || 0) + take;
+      if (shipmentRemaining(sh) <= 0 && !sh.finishedAt) sh.finishedAt = todayStr();
+      toDraw -= take;
+      nextDrawdowns[nextDrawdowns.length - 1].qty += take;
+    });
+    if (toDraw > 0) {
+      const item = state.items.find((i) => i.id === itemId);
+      if (item && item.keySku) {
+        const usedIds = new Set(existing.map((dd) => dd.shipmentId));
+        const fresh = shipments
+          .filter((s) => s.itemId === itemId && s.received && s.supplierId === order.supplierId
+            && shipmentRemaining(s) > 0 && !usedIds.has(s.id))
+          .sort((a, b) => (a.rentFreeDeadline || '9999-99-99').localeCompare(b.rentFreeDeadline || '9999-99-99'))[0];
+        if (fresh) {
+          const take = Math.min(shipmentRemaining(fresh), toDraw);
+          fresh.drawnDown = (Number(fresh.drawnDown) || 0) + take;
+          if (shipmentRemaining(fresh) <= 0 && !fresh.finishedAt) fresh.finishedAt = todayStr();
+          nextDrawdowns.push({ shipmentId: fresh.id, qty: take });
+        }
+        // Anything still left is a spot purchase — not drawn anywhere, same as normal.
+      }
+    }
+  });
+
+  updateShipments(shipments);
+  updateOrders(state.orders.map((o) => (o.id === orderId
+    ? { ...o, items: nextItems, drawdowns: nextDrawdowns.filter((d) => d.qty > 0) }
+    : o)));
 }
 
 function setOrderLineQty(orderId, itemIndex, qty) {
@@ -721,9 +838,49 @@ document.getElementById('bottomNav').addEventListener('click', (e) => {
   if (btn) setTab(btn.dataset.tab);
 });
 
+// Small pill-button helper, shared by any toolbar/filter chip.
+function chip(active, label, attr) {
+  return `<button ${attr} class="btn-sm chip-btn" style="background:${active ? 'var(--ink)' : 'rgba(255,255,255,.9)'};color:${active ? '#fff' : 'var(--forest)'};font-weight:${active ? '600' : '500'};">${label}</button>`;
+}
+
+// Pinned toolbar inside the sticky header — search + the one or two controls
+// worth reaching without scrolling, per tab. Filters that are a one-time
+// setup (warehouse, month) stay in the list below instead of up here.
+function renderTabToolbar() {
+  if (state.tab === 'today') {
+    if (state.suppliers.length === 0 || state.items.length === 0) return '';
+    const pendingEntryCount = Object.values(state.draftQty).filter((v) => parseFloat(v) > 0).length;
+    return `
+      <input type="search" id="orderSearch" placeholder="Search items or item code…" value="${escapeHtml(state.search)}">
+      <button id="addAllBtn" data-add-all class="btn-sm" ${pendingEntryCount === 0 ? 'disabled' : ''}
+        style="display:flex;align-items:center;gap:6px;white-space:nowrap;background:${pendingEntryCount > 0 ? '#fff' : 'rgba(255,255,255,.3)'};color:${pendingEntryCount > 0 ? 'var(--forest)' : 'rgba(255,255,255,.6)'};">
+        ${icon('plus', 13, pendingEntryCount > 0 ? 'var(--forest)' : 'rgba(255,255,255,.6)')} <span id="addAllLabel">Add all${pendingEntryCount > 0 ? ` (${pendingEntryCount})` : ''}</span>
+      </button>`;
+  }
+  if (state.tab === 'cart') {
+    if (state.cart.length === 0 && computeIncomingOrders().length === 0) return '';
+    return `<input type="search" id="cartSearch" placeholder="Search supplier, item, or code…" value="${escapeHtml(state.cartSearch)}">`;
+  }
+  if (state.tab === 'stock') {
+    if (state.items.length === 0) return '';
+    return `<input type="search" id="stockSearch" placeholder="Search items, code, supplier, or tag…" value="${escapeHtml(state.stockSearch)}">`;
+  }
+  if (state.tab === 'runway') {
+    const anyKeySku = state.items.some((i) => i.keySku && !i.inactive);
+    if (!anyKeySku) return '';
+    return `
+      <input type="search" id="runwaySearch" placeholder="Search item name or code…" value="${escapeHtml(state.runwaySearch)}">
+      ${chip(state.runwayRisk === 'all', 'All', 'data-runway-risk="all"')}
+      ${chip(state.runwayRisk === 'gap', 'Stockout', 'data-runway-risk="gap"')}
+      ${chip(state.runwayRisk === 'rent', 'Rent', 'data-runway-risk="rent"')}`;
+  }
+  return '';
+}
+
 function renderTab() {
   const main = document.getElementById('mainContent');
   document.getElementById('pageTitle').textContent = TABS.find((t) => t.key === state.tab).title;
+  document.getElementById('tabToolbar').innerHTML = renderTabToolbar();
   if (state.tab === 'today') { main.innerHTML = renderOrdersTab(); filterOrderListRows(); }
   else if (state.tab === 'cart') { main.innerHTML = renderCartTab(); filterCartRows(); }
   else if (state.tab === 'stock') { main.innerHTML = renderStockTab(); filterStockRows(); }
@@ -740,7 +897,7 @@ function renderTab() {
 const FILTER_FIELDS = [
   {
     key: 'supplier', label: 'Supplier',
-    getOptions: (items, suppliers) => suppliers.map((s) => ({ value: s.id, label: s.name })),
+    getOptions: (items, suppliers) => [...suppliers].sort((a, b) => (a.name || '').localeCompare(b.name || '', 'zh-Hant')).map((s) => ({ value: s.id, label: s.name })),
     matches: (item, value) => item.supplierId === value,
   },
   {
@@ -796,7 +953,6 @@ function renderOrdersTab() {
     .filter((x) => !state.filterValue || !activeFilterDef || activeFilterDef.matches(x.item, state.filterValue))
     .filter((x) => !state.onlyOrderedForDate || ((incomingBreakdown[x.item.id] && incomingBreakdown[x.item.id].exact) || 0) > 0);
 
-  const pendingEntryCount = Object.values(state.draftQty).filter((v) => parseFloat(v) > 0).length;
   const orderingForToday = state.orderDate === todayStr();
 
   const rowsHtml = list.map(({ item, index }) => {
@@ -845,17 +1001,9 @@ function renderOrdersTab() {
       ${renderOrderDateHeader()}
 
       <section class="section">
-        <div class="row-between mb2">
-          <div class="section-label" style="margin-bottom:0;">Order list</div>
-          <button id="addAllBtn" data-add-all class="btn-sm" ${pendingEntryCount === 0 ? 'disabled' : ''}
-            style="display:flex;align-items:center;gap:6px;background:${pendingEntryCount > 0 ? 'var(--forest)' : 'var(--border)'};color:${pendingEntryCount > 0 ? '#fff' : 'var(--faint)'};">
-            ${icon('plus', 13, pendingEntryCount > 0 ? '#fff' : 'var(--faint)')} <span id="addAllLabel">Add all${pendingEntryCount > 0 ? ` (${pendingEntryCount})` : ''} to cart</span>
-          </button>
-        </div>
+        <div class="section-label" style="margin-bottom:8px;">Order list</div>
 
         <p class="text-xs faint mb2">${orderingForToday ? 'Numbers = incoming today, incoming after today' : `Numbers = total incoming so far, incoming on ${formatDateLabel(state.orderDate)}, incoming after`}</p>
-
-        <input type="search" id="orderSearch" placeholder="Search items or item code…" value="${escapeHtml(state.search)}" class="mb2">
 
         <div class="row wrap gap2 mb2">
           ${activeFilterFields.length > 1 ? `
@@ -910,6 +1058,24 @@ function goToSetup() {
 }
 
 // Cheap, no-rerender text filter: toggles visibility of existing rows instead of rebuilding the list.
+// Remembers where you were scrolled to right as a search begins, and jumps
+// back there once it's cleared back to empty. So: scroll deep into a long
+// list, search to find and add something, clear the search — you land back
+// exactly where you left off instead of at the top.
+function trackSearchScroll(tabKey, prevVal, newVal) {
+  const wasEmpty = !prevVal || !prevVal.trim();
+  const isEmpty = !newVal || !newVal.trim();
+  if (wasEmpty && !isEmpty) {
+    // A fresh search is starting — remember this spot.
+    state.preSearchScroll[tabKey] = window.scrollY;
+  } else if (!wasEmpty && isEmpty) {
+    // Cleared back to empty — jump back, then forget it (next search starts fresh).
+    const y = state.preSearchScroll[tabKey];
+    delete state.preSearchScroll[tabKey];
+    if (y != null) requestAnimationFrame(() => window.scrollTo(0, y));
+  }
+}
+
 function filterOrderListRows() {
   const q = state.search.trim().toLowerCase();
   document.querySelectorAll('[data-order-row]').forEach((el) => {
@@ -1059,7 +1225,7 @@ function renderCartLineRow(l, supplierIdForCard) {
       ${isEditingSupplier ? `
         <div class="mt1" style="display:flex;">
           <select data-set-supplier="${l.id}" style="font-size:13px;padding:6px 8px;">
-            ${state.suppliers.map((s) => `<option value="${s.id}" ${s.id === (l.supplierOverride || l.item.supplierId) ? 'selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}
+            ${sortedSuppliers().map((s) => `<option value="${s.id}" ${s.id === (l.supplierOverride || l.item.supplierId) ? 'selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}
           </select>
         </div>` : ''}
     </div>`;
@@ -1079,7 +1245,6 @@ function renderIncomingSection(incomingOrders) {
     <section class="section">
       <div class="section-label">Incoming — already ordered</div>
       <p class="text-xs faint mb2">These drop off automatically once their delivery day has passed, so they won't get double-ordered.</p>
-      <input type="search" id="cartSearch" placeholder="Search supplier, item, or code…" value="${escapeHtml(state.cartSearch)}" class="mb2">
       <div class="row wrap gap2 mb2">
         <select id="incomingFilterDateSelect" style="width:auto;font-size:13px;padding:6px 8px;">
           <option value="">All upcoming dates</option>
@@ -1189,7 +1354,6 @@ function renderStockTab() {
     <div>
       <button data-open-item-modal class="btn btn-primary mb2" style="display:flex;align-items:center;gap:6px;">${icon('plus', 16, '#fff')} Add stock item</button>
       <p class="text-xs faint" style="margin-bottom:12px;">Order items to match your stockroom layout. Use the arrows to reorder, or "insert here" to slot a new item into place.</p>
-      <input type="search" id="stockSearch" placeholder="Search items, item code, supplier, or tag…" value="${escapeHtml(state.stockSearch)}" class="mb2">
       ${state.items.length === 0
         ? renderEmptyState('No items yet', 'Add the products you regularly order from your suppliers.')
         : `<p id="stockNoMatches" class="text-sm muted hidden" style="text-align:center;padding:24px 0;">No items match your search.</p>
@@ -1553,14 +1717,9 @@ function renderRunwayTab() {
   });
 
   const filtersActive = state.runwayRisk !== 'all' || state.runwayMonth !== 'all';
-  const chip = (active, label, attr) =>
-    `<button ${attr} class="btn-sm" style="background:${active ? 'var(--ink)' : 'var(--tint)'};color:${active ? '#fff' : 'var(--muted)'};font-weight:${active ? '600' : '400'};">${label}</button>`;
 
   const filterBar = `
     <div class="row wrap gap2 mb2" style="align-items:center;">
-      ${chip(state.runwayRisk === 'all', 'All risks', 'data-runway-risk="all"')}
-      ${chip(state.runwayRisk === 'gap', 'Stockout', 'data-runway-risk="gap"')}
-      ${chip(state.runwayRisk === 'rent', 'Rent risk', 'data-runway-risk="rent"')}
       <select id="runwayMonth" style="width:auto;padding:6px 10px;font-size:13px;">
         <option value="all" ${state.runwayMonth === 'all' ? 'selected' : ''}>Any month</option>
         ${upcomingMonths(6).map((m) => `<option value="${m.key}" ${state.runwayMonth === m.key ? 'selected' : ''}>${m.label}</option>`).join('')}
@@ -1611,7 +1770,6 @@ function renderRunwayTab() {
 
   return `
     <div>
-      <input type="search" id="runwaySearch" placeholder="Search item name or code…" value="${escapeHtml(state.runwaySearch)}" class="mb2">
       ${filterBar}
       <div class="row wrap" style="gap:12px;margin-bottom:10px;">
         <span class="text-xs row" style="gap:4px;align-items:center;"><span style="width:10px;height:10px;border-radius:2px;background:var(--forest);opacity:.85;display:inline-block;"></span> Covered</span>
@@ -1820,7 +1978,7 @@ function renderShipmentForm(m) {
     <p class="hint">A short label to help you recognize this batch at a glance — whatever's useful to you.</p>
     ${fieldHtml('Supplier', `<select id="f_supplierId">
         <option value="">Not set</option>
-        ${state.suppliers.map((s) => `<option value="${s.id}" ${s.id === d.supplierId ? 'selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}
+        ${sortedSuppliers().map((s) => `<option value="${s.id}" ${s.id === d.supplierId ? 'selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}
       </select>`)}
     <div class="row gap2">
       <div class="flex1">${fieldHtml('Quantity', `<input type="number" inputmode="decimal" id="f_quantity" value="${d.quantity}">`)}</div>
@@ -2009,10 +2167,22 @@ function pruneOldData() {
   });
   if (keptOrders.length !== state.orders.length) updateOrders(keptOrders);
 
+  // Shipment ids still owed to a PENDING order (sent but not yet arrived).
+  // Deleting one of these would leave that order's Undo/Revise with nothing
+  // to credit back to — silently corrupting the drawdown ledger. A batch
+  // fully drawn by an order today can easily sit "finished" for longer than
+  // 7 days if that order's pickup date is more than a week out, which is
+  // routine for this business, so this guard matters in practice.
+  const owedTo = new Set();
+  keptOrders.forEach((o) => {
+    if (isStillIncoming(o) && o.drawdowns) o.drawdowns.forEach((d) => owedTo.add(d.shipmentId));
+  });
+
   const shipCutoff = new Date();
   shipCutoff.setDate(shipCutoff.getDate() - FINISHED_SHIPMENT_RETENTION_DAYS);
   const shipCutoffStr = toLocalDateStr(shipCutoff);
-  const keptShipments = state.shipments.filter((s) => !s.finishedAt || s.finishedAt >= shipCutoffStr);
+  const keptShipments = state.shipments.filter((s) =>
+    !s.finishedAt || s.finishedAt >= shipCutoffStr || owedTo.has(s.id));
   if (keptShipments.length !== state.shipments.length) updateShipments(keptShipments);
 }
 
@@ -2173,7 +2343,7 @@ function renderItemForm(m) {
     ${insertAfterItem ? `<p class="text-xs" style="background:var(--tint);color:var(--muted);padding:6px 8px;border-radius:8px;margin-bottom:12px;">Will be inserted right after "${escapeHtml(insertAfterItem.name)}"</p>` : ''}
     ${fieldHtml('Item name', `<input type="text" id="f_name" value="${escapeHtml(d.name)}" placeholder="e.g. Tomatoes">`)}
     ${fieldHtml('Item code (optional)', `<input type="text" id="f_itemCode" value="${escapeHtml(d.itemCode)}" placeholder="e.g. BF-STRIP-01">`)}
-    ${fieldHtml('Supplier', `<select id="f_supplierId">${state.suppliers.length === 0 ? '<option value="">Add a supplier first</option>' : ''}${state.suppliers.map((s) => `<option value="${s.id}" ${s.id === d.supplierId ? 'selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}</select>`)}
+    ${fieldHtml('Supplier', `<select id="f_supplierId">${state.suppliers.length === 0 ? '<option value="">Add a supplier first</option>' : ''}${sortedSuppliers().map((s) => `<option value="${s.id}" ${s.id === d.supplierId ? 'selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}</select>`)}
     ${fieldHtml('Pickup warehouse', `<select id="f_defaultWarehouseId">
         <option value="">${supplierDefaultWarehouse ? `Use supplier default (${escapeHtml(supplierDefaultWarehouse.name)})` : 'Varies by order'}</option>
         ${state.warehouses.map((w) => `<option value="${w.id}" ${w.id === d.defaultWarehouseId ? 'selected' : ''}>${escapeHtml(w.name)}</option>`).join('')}
@@ -2354,11 +2524,18 @@ function refreshItemDraftFromDom() {
    ============================================================ */
 function initEventListeners() {
   const main = document.getElementById('mainContent');
+  const toolbar = document.getElementById('tabToolbar');
   const modalRoot = document.getElementById('modalRoot');
 
   main.addEventListener('click', onMainClick);
   main.addEventListener('input', onMainInput);
   main.addEventListener('change', onMainChange);
+  // Toolbar is a sibling of #mainContent (lives in the sticky header), so it
+  // needs its own copies of the same delegated handlers — the handlers
+  // themselves are dumb (just read e.target), so this is safe to share.
+  toolbar.addEventListener('click', onMainClick);
+  toolbar.addEventListener('input', onMainInput);
+  toolbar.addEventListener('change', onMainChange);
   modalRoot.addEventListener('click', onModalClick);
   modalRoot.addEventListener('input', onModalInput);
   modalRoot.addEventListener('change', onModalChange);
@@ -2443,10 +2620,10 @@ function onMainInput(e) {
     updateAddAllButton(); // keep the button live as you type — no re-render, so focus stays put
     return;
   }
-  if (t.id === 'orderSearch') { state.search = t.value; filterOrderListRows(); return; }
-  if (t.id === 'stockSearch') { state.stockSearch = t.value; filterStockRows(); return; }
-  if (t.id === 'runwaySearch') { state.runwaySearch = t.value; filterRunwayRows(); return; }
-  if (t.id === 'cartSearch') { state.cartSearch = t.value; filterCartRows(); return; }
+  if (t.id === 'orderSearch') { trackSearchScroll('today', state.search, t.value); state.search = t.value; filterOrderListRows(); return; }
+  if (t.id === 'stockSearch') { trackSearchScroll('stock', state.stockSearch, t.value); state.stockSearch = t.value; filterStockRows(); return; }
+  if (t.id === 'runwaySearch') { trackSearchScroll('runway', state.runwaySearch, t.value); state.runwaySearch = t.value; filterRunwayRows(); return; }
+  if (t.id === 'cartSearch') { trackSearchScroll('cart', state.cartSearch, t.value); state.cartSearch = t.value; filterCartRows(); return; }
 }
 
 function onMainChange(e) {
