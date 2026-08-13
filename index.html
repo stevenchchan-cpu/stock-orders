@@ -59,6 +59,8 @@
   .warn-hint { font-size:12px; color:var(--amber-strong); margin-bottom:8px; }
 
   .chip { display:inline-flex; align-items:center; gap:4px; padding:6px 12px; border-radius:999px; font-size:12px; font-weight:500; }
+  @keyframes flash-highlight { 0%,35% { background:var(--amber-bg); } 100% { background:transparent; } }
+  .flash-highlight { animation:flash-highlight 1.8s ease-out; border-radius:10px; }
   .tag { font-size:10px; padding:2px 6px; border-radius:999px; background:var(--tint); color:var(--muted); }
 
   .segmented { display:inline-flex; border:1px solid var(--border); border-radius:999px; overflow:hidden; }
@@ -719,6 +721,11 @@ function saveItem(data) {
 }
 function deleteItem(id) {
   updateItems(state.items.filter((i) => i.id !== id));
+  // Otherwise a leftover unsent cart line for this item becomes a permanent
+  // orphan — invisible in the cart list (which requires a real item to
+  // group by supplier) yet still counted in the pickup-locations summary,
+  // showing a "Not set" that can never actually be found or fixed.
+  if (state.cart.some((c) => c.itemId === id)) updateCart(state.cart.filter((c) => c.itemId !== id));
   closeModal();
 }
 function moveItem(id, direction) {
@@ -1147,6 +1154,20 @@ function updateAddAllButton() {
   if (svg) svg.setAttribute('stroke', on ? '#fff' : 'var(--faint)');
 }
 
+// Jumps to whichever cart line is missing a pickup warehouse and flashes it,
+// since the summary chip only shows a count, not which item it is.
+function scrollToMissingPickup() {
+  const missing = state.cart.find((c) =>
+    !c.pickupWarehouseId || !state.warehouses.some((w) => w.id === c.pickupWarehouseId));
+  if (!missing) return;
+  const el = document.querySelector(`[data-cart-line="${missing.id}"]`);
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  el.classList.remove('flash-highlight');
+  void el.offsetWidth; // force reflow so the animation restarts if tapped again
+  el.classList.add('flash-highlight');
+}
+
 function renderPickupLocationsSummary() {
   if (state.cart.length === 0) return '';
   const counts = {};
@@ -1159,10 +1180,15 @@ function renderPickupLocationsSummary() {
     <section class="section">
       <div class="section-label">Pickup locations</div>
       <div class="row wrap gap2">
-        ${Object.entries(counts).map(([name, count]) => `
-          <div class="chip" style="background:${name === 'Not set' ? 'var(--amber-bg)' : '#fff'};color:${name === 'Not set' ? 'var(--amber-text)' : 'var(--ink)'};border:1px solid ${name === 'Not set' ? 'var(--amber-border)' : 'var(--border)'};">
-            ${icon('mapPin', 12)} ${escapeHtml(name)} (${count})
-          </div>`).join('')}
+        ${Object.entries(counts).map(([name, count]) => {
+          const style = `background:${name === 'Not set' ? 'var(--amber-bg)' : '#fff'};color:${name === 'Not set' ? 'var(--amber-text)' : 'var(--ink)'};border:1px solid ${name === 'Not set' ? 'var(--amber-border)' : 'var(--border)'};`;
+          const inner = `${icon('mapPin', 12)} ${escapeHtml(name)} (${count})`;
+          // "Not set" is tappable — jumps straight to the line missing it,
+          // since the count alone doesn't say WHICH item that is.
+          return name === 'Not set'
+            ? `<button data-scroll-to-missing-pickup class="chip" style="${style}">${inner}</button>`
+            : `<div class="chip" style="${style}">${inner}</div>`;
+        }).join('')}
       </div>
     </section>`;
 }
@@ -2184,6 +2210,13 @@ function pruneOldData() {
   const keptShipments = state.shipments.filter((s) =>
     !s.finishedAt || s.finishedAt >= shipCutoffStr || owedTo.has(s.id));
   if (keptShipments.length !== state.shipments.length) updateShipments(keptShipments);
+
+  // Orphaned cart lines: a leftover unsent line whose item was deleted before
+  // this cleanup existed. Invisible in the cart list (grouping requires a
+  // real item), yet still counted in the pickup-locations summary — showing
+  // a "Not set" with no line to find or fix. Clears itself out here.
+  const keptCart = state.cart.filter((c) => state.items.some((i) => i.id === c.itemId));
+  if (keptCart.length !== state.cart.length) updateCart(keptCart);
 }
 
 
@@ -2573,6 +2606,7 @@ function onMainClick(e) {
     return;
   }
   if (btn.dataset.toggleWarehouse) { toggleCartWarehouse(btn.dataset.toggleWarehouse); renderTab(); return; }
+  if (btn.hasAttribute('data-scroll-to-missing-pickup')) { scrollToMissingPickup(); return; }
   if (btn.dataset.editPickup) { state.editingPickupFor = state.editingPickupFor === btn.dataset.editPickup ? null : btn.dataset.editPickup; state.editingSupplierFor = null; renderTab(); return; }
   if (btn.dataset.editSupplier) { state.editingSupplierFor = state.editingSupplierFor === btn.dataset.editSupplier ? null : btn.dataset.editSupplier; state.editingPickupFor = null; renderTab(); return; }
   if (btn.dataset.removeLine) { setCartQty(btn.dataset.removeLine, 0); renderTab(); return; }
