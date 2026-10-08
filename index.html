@@ -486,7 +486,8 @@ function computeCartGroups() {
 }
 
 function computeIncomingOrders() {
-  return state.orders.filter(isStillIncoming).sort((a, b) => a.placedAt.localeCompare(b.placedAt));
+  // Newest sent first, so the order you just sent is at the top of its date.
+  return state.orders.filter(isStillIncoming).sort((a, b) => (b.placedAt || '').localeCompare(a.placedAt || ''));
 }
 
 function sendSupplierOrder(group, dateStr) {
@@ -648,13 +649,9 @@ function reviseOrderItems(orderId, nextItemsFn) {
         const fresh = shipments
           .filter((s) => s.itemId === itemId && s.received && s.supplierId === order.supplierId
             && shipmentRemaining(s) > 0 && !usedIds.has(s.id))
-          .sort((a, b) => (a.rentFreeDeadline || '9999-99-99').localeCompare(b.rentFreeDeadline || '9999-99-99'))[0];
-        if (fresh) {
-          const take = Math.min(shipmentRemaining(fresh), toDraw);
-          fresh.drawnDown = (Number(fresh.drawnDown) || 0) + take;
-          if (shipmentRemaining(fresh) <= 0 && !fresh.finishedAt) fresh.finishedAt = todayStr();
-          nextDrawdowns.push({ shipmentId: fresh.id, qty: take });
-        }
+          .sort((a, b) => (a.rentFreeDeadline || '9999-99-99').localeCompare(b.rentFreeDeadline || '9999-99-99'));
+        // Same spill rule as a new order: next batch, then the next, and so on.
+        nextDrawdowns.push(...drawFromBatches(fresh, toDraw).taken);
         // Anything still left is a spot purchase — not drawn anywhere, same as normal.
       }
     }
@@ -976,8 +973,17 @@ function renderOrdersTab() {
     const nameLower = item.name.toLowerCase();
     const codeLower = (item.itemCode || '').toLowerCase();
     const avail = drawdownAvailability(item);
+    // Rent-free date of the batch an order would draw from, as just d/m (no label)
+    // (e.g. 14/11). Amber within 7 days, red once passed.
+    let rfHtml = '';
+    if (avail && avail.qty > 0 && avail.deadline) {
+      const [, mm, dd] = avail.deadline.split('-');
+      const left = daysFromToday(avail.deadline);
+      const rfColor = left < 0 ? 'var(--red-text)' : left <= 7 ? 'var(--amber-strong)' : 'var(--muted)';
+      rfHtml = ` <span style="font-size:10px;font-weight:500;color:${rfColor};">${Number(dd)}/${Number(mm)}</span>`;
+    }
     const availHtml = avail
-      ? ` · <span style="color:var(--forest);font-weight:600;">${avail.qty} avail${avail.alpha ? ' α' : ''}${avail.beta ? ' β' : ''}</span>`
+      ? `<span class="shrink0" style="white-space:nowrap;"> · <span style="color:var(--forest);font-weight:600;">${avail.qty}</span>${rfHtml ? ` <span class="faint">|</span>${rfHtml}` : ''}${(avail.alpha || avail.beta) ? ` <span style="color:var(--forest);font-weight:600;">${[avail.alpha ? 'α' : '', avail.beta ? 'β' : ''].filter(Boolean).join(' ')}</span>` : ''}</span>`
       : '';
     return `
       <div class="card" data-order-row data-name="${escapeHtml(nameLower)}" data-code="${escapeHtml(codeLower)}">
@@ -985,7 +991,7 @@ function renderOrdersTab() {
           <span class="index-badge">#${index}</span>
           <div class="flex1">
             <div class="text-sm truncate" style="font-weight:500;color:var(--ink);">${escapeHtml(item.name)}</div>
-            <div class="text-xs truncate muted">${escapeHtml(supplier ? supplier.name : 'No supplier')} · ${escapeHtml(pickupWarehouse ? pickupWarehouse.name : 'varies')}${availHtml}</div>
+            <div class="text-xs muted" style="display:flex;min-width:0;"><span class="truncate" style="min-width:0;">${escapeHtml(supplier ? supplier.name : 'No supplier')} · ${escapeHtml(pickupWarehouse ? pickupWarehouse.name : 'varies')}</span>${availHtml}</div>
             ${tagsHtml}
             ${hasIncoming ? `<div class="text-xs truncate font-mono muted" data-incoming-text>${incomingText}</div>` : ''}
           </div>
@@ -1492,12 +1498,16 @@ function simulateItemRunway(item, shipments, days = SIM_DAYS) {
     scheduled[day] = (scheduled[day] || 0) + qty;
   });
 
-  // Build batches. Landed = available from day 0. In transit = available from
-  // its ETA day (a past ETA means late, so treat it as arriving today).
+  // Build batches. Only shipments marked Landed count as in the warehouse
+  // today (day 0). Anything not marked Landed is in transit, whatever its ETA
+  // says — the ETA may simply not have been updated. A not-landed shipment
+  // whose ETA is today or already past is treated as arriving tomorrow, so it
+  // never inflates today's "At warehouse" figure.
   const batches = itemShipments.map((s) => ({
     id: s.id,
     shipment: s,
-    arriveDay: s.received ? 0 : Math.max(0, daysFromToday(s.etaDate)),
+    arriveDay: s.received ? 0 : Math.max(1, daysFromToday(s.etaDate) ?? 1),
+    overdue: !s.received && (daysFromToday(s.etaDate) ?? 1) <= 0,
     qty: physicalRemaining(s),
     deadline: s.rentFreeDeadline || '9999-99-99', // no deadline = drawn last
     perDay: [], // own remaining, by day
@@ -1923,7 +1933,9 @@ function renderRunwayDetailModal(m) {
         <div class="text-xs" style="margin-top:8px;line-height:1.7;color:var(--muted);">
           ${landed
             ? `In the warehouse now · lasts until <strong style="color:var(--ink);">${lastsUntil}</strong>`
-            : `Arrives <strong style="color:var(--ink);">${roughDateLabel(b.arriveDay)}</strong> · lasts until <strong style="color:var(--ink);">${lastsUntil}</strong>`}
+            : b.overdue
+              ? `<span style="color:var(--amber-strong);font-weight:600;">Not marked landed yet</span> — ETA was ${s.etaDate ? formatDateLabel(s.etaDate) : 'not set'}. Tap “In transit” once it's in the warehouse · lasts until <strong style="color:var(--ink);">${lastsUntil}</strong>`
+              : `Arrives <strong style="color:var(--ink);">${roughDateLabel(b.arriveDay)}</strong> · lasts until <strong style="color:var(--ink);">${lastsUntil}</strong>`}
           ${rentLine ? `<br>${rentLine}` : ''}
           ${s.notes ? `<br><span class="faint">${escapeHtml(s.notes)}</span>` : ''}
         </div>
@@ -1985,9 +1997,11 @@ function openShipmentModal(mode, shipment, itemId, returnTo) {
     quantity: shipment.quantity ?? 0, etaDate: shipment.etaDate || '',
     rentFreeDeadline: shipment.rentFreeDeadline || '', received: !!shipment.received,
     notes: shipment.notes || '', drawnDown: shipment.drawnDown ?? 0,
+    rfAuto: defaultRentFreeDeadline(shipment.etaDate || ''),
   } : {
     itemId, header: '', supplierId: (item ? item.supplierId : '') || '', askingPrice: '',
     quantity: 0, etaDate: '', rentFreeDeadline: '', received: false, notes: '', drawnDown: 0,
+    rfAuto: '',
   };
   openModal({ type: 'shipment', mode, data: shipment, draft, returnTo });
 }
@@ -2012,7 +2026,7 @@ function renderShipmentForm(m) {
     </div>
     ${fieldHtml('Expected arrival (ETA)', `<input type="date" id="f_etaDate" value="${d.etaDate}">`)}
     ${fieldHtml('Rent-free deadline', `<input type="date" id="f_rentFreeDeadline" value="${d.rentFreeDeadline}">`)}
-    <p class="hint">Usually the arrival/invoice date plus your agreed rent-free period.</p>
+    <p class="hint">Fills in automatically as one month after the ETA, minus a day. Change it if this batch's terms are different — once you've changed it, a later ETA change won't overwrite it.</p>
     <label class="row" style="gap:8px;margin-bottom:12px;cursor:pointer;">
       <input type="checkbox" id="f_received" ${d.received ? 'checked' : ''}>
       <span class="text-sm">Already landed / in warehouse</span>
@@ -2060,10 +2074,24 @@ function deleteShipment(id) {
    deducted from that supplier's LANDED shipments of that item (earliest
    rent-free deadline first — matches how cold stores release stock and
    minimizes rent). What was deducted is recorded on the order itself, so
-   UNDO can re-credit exactly. Revised orders deliberately do NOT auto-adjust
-   (v1 scope) — the "drawn down" field on the shipment edit form is the
-   manual escape hatch for those rarer cases.
+   UNDO can re-credit exactly. Revisions adjust the same batches (see
+   reviseOrderItems). The "drawn down" field on the shipment edit form is the
+   manual escape hatch for correcting a discrepancy.
    ============================================================ */
+/* Default rent-free deadline: one month after the ETA, minus a day
+   (ETA 15 Oct -> 14 Nov). If next month is shorter (ETA 31 Jan), the
+   anniversary is clamped to that month's last day first (28/29 Feb), then
+   minus a day. Only a starting value — it can always be changed. */
+function defaultRentFreeDeadline(etaDate) {
+  if (!etaDate) return '';
+  const [y, m, d] = etaDate.split('-').map(Number);
+  if (!y || !m || !d) return '';
+  const lastDayNextMonth = new Date(y, m + 1, 0).getDate(); // m is 1-based, so (y, m+1, 0) = last day of next month
+  const anniversary = new Date(y, m, Math.min(d, lastDayNextMonth));
+  anniversary.setDate(anniversary.getDate() - 1);
+  return toLocalDateStr(anniversary);
+}
+
 function shipmentRemaining(s) {
   return Math.max(0, (Number(s.quantity) || 0) - (Number(s.drawnDown) || 0));
 }
@@ -2091,18 +2119,39 @@ function drawdownAvailability(item) {
 
   return {
     qty: own.length ? shipmentRemaining(own[0]) : 0,
+    deadline: own.length ? (own[0].rentFreeDeadline || '') : '', // rent-free date of that same batch
     alpha: own.length > 1,      // another batch from this supplier
     beta: others.length > 0,    // another supplier holds stock too
   };
 }
 
-/* ONE BATCH AT A TIME. An order draws from a single batch per item — the one
-   with the earliest rent-free deadline — and stops there. It never spills into
-   a second contract, even if the order is larger than that batch holds; the
-   excess is simply a spot purchase. You finish one contract, then the next
-   order starts on the following batch.
-   Quantities are aggregated per item first, so splitting the same item across
-   two cart lines can't sneak into a second batch either. */
+/* SPILLS ACROSS THE SAME SUPPLIER'S BATCHES. An order draws from the batch
+   with the earliest rent-free deadline first; if that batch can't cover it
+   (e.g. order 5, batch has 3 left), the rest comes from the next landed batch
+   of the SAME item from the SAME supplier, and so on. Only what none of that
+   supplier's landed batches can cover is a spot purchase.
+   Every batch touched is recorded on the order (in draw order), so Undo
+   credits each one back exactly and Revise can give back LIFO.
+   Quantities are aggregated per item first, so split cart lines behave the
+   same as one line. */
+/* Shared by new orders and revisions: take `toDraw` from `batches` in the
+   order given, mutating their drawnDown. Returns what was taken per batch and
+   how much nobody could cover. */
+function drawFromBatches(batches, toDraw) {
+  const taken = [];
+  let left = toDraw;
+  for (const b of batches) {
+    if (left <= 0) break;
+    const take = Math.min(shipmentRemaining(b), left);
+    if (take <= 0) continue;
+    b.drawnDown = (Number(b.drawnDown) || 0) + take;
+    if (shipmentRemaining(b) <= 0 && !b.finishedAt) b.finishedAt = todayStr();
+    taken.push({ shipmentId: b.id, qty: take });
+    left -= take;
+  }
+  return { taken, left };
+}
+
 function applyDrawdownsForOrder(order) {
   const drawdowns = []; // { shipmentId, qty }
   let shipments = state.shipments.map((s) => ({ ...s }));
@@ -2117,17 +2166,11 @@ function applyDrawdownsForOrder(order) {
   wanted.forEach((toDraw, itemId) => {
     const item = state.items.find((i) => i.id === itemId);
     if (!item || !item.keySku) return;
-    const batch = shipments
+    const batches = shipments
       .filter((s) => s.itemId === item.id && s.received && s.supplierId === order.supplierId && shipmentRemaining(s) > 0)
-      .sort((a, b) => (a.rentFreeDeadline || '9999-99-99').localeCompare(b.rentFreeDeadline || '9999-99-99'))[0];
-    if (!batch) return; // nothing held with this supplier — spot purchase
-
-    const take = Math.min(shipmentRemaining(batch), toDraw);
-    if (take <= 0) return;
-    batch.drawnDown = (Number(batch.drawnDown) || 0) + take;
-    if (shipmentRemaining(batch) <= 0 && !batch.finishedAt) batch.finishedAt = todayStr();
-    drawdowns.push({ shipmentId: batch.id, qty: take });
-    // Anything beyond this batch is NOT taken from the next one — by design.
+      .sort((a, b) => (a.rentFreeDeadline || '9999-99-99').localeCompare(b.rentFreeDeadline || '9999-99-99'));
+    drawdowns.push(...drawFromBatches(batches, toDraw).taken);
+    // Whatever's left after every batch from this supplier is a spot purchase.
   });
 
   if (drawdowns.length) updateShipments(shipments);
@@ -2811,6 +2854,17 @@ function onModalInput(e) {
     const d = state.modal.draft;
     const key = t.id.slice(2);
     if (key in d) d[key] = t.type === 'checkbox' ? t.checked : t.value;
+    // Shipment form: ETA drives a default rent-free deadline, unless the
+    // deadline has been set by hand (i.e. it no longer matches the last default).
+    if (key === 'etaDate' && state.modal.type === 'shipment') {
+      const next = defaultRentFreeDeadline(d.etaDate);
+      if (!d.rentFreeDeadline || d.rentFreeDeadline === d.rfAuto) {
+        d.rentFreeDeadline = next;
+        const rfEl = document.getElementById('f_rentFreeDeadline');
+        if (rfEl) rfEl.value = next;
+      }
+      d.rfAuto = next;
+    }
     updateSaveButtonState();
   }
 }
