@@ -100,6 +100,9 @@
   .qty-input { width:56px; padding:8px 4px; border-radius:9px; border:1.5px solid var(--forest); background:#F2F7F5; color:var(--forest); font-weight:700; font-size:16px; text-align:center; }
   .stepper-btn { width:26px; height:26px; border-radius:999px; display:flex; align-items:center; justify-content:center; }
   .index-badge { font-family:'JetBrains Mono',monospace; font-size:12px; width:20px; text-align:center; color:var(--faint); flex-shrink:0; }
+  /* Orders tab: the #number is a shortcut to the item's edit form. Bigger
+     tap area than it looks, underlined so it reads as tappable. */
+  .index-link { width:auto; min-width:28px; min-height:36px; margin:-8px -4px; padding:8px 4px; color:var(--forest); text-decoration:underline; text-decoration-color:var(--border); text-underline-offset:3px; }
 
   svg { display:block; }
   ::placeholder { color:var(--faint); }
@@ -475,7 +478,9 @@ function toggleCartWarehouse(lineId) {
 }
 
 function computeCartGroups() {
-  return state.suppliers
+  // Alphabetical (same zh-Hant sort as the supplier pickers), not the
+  // Suppliers tab's own manual order.
+  return sortedSuppliers()
     .map((s) => {
       const lines = state.cart
         .map((c) => ({ ...c, item: state.items.find((i) => i.id === c.itemId) }))
@@ -988,7 +993,7 @@ function renderOrdersTab() {
     return `
       <div class="card" data-order-row data-name="${escapeHtml(nameLower)}" data-code="${escapeHtml(codeLower)}">
         <div class="row" style="gap:10px;">
-          <span class="index-badge">#${index}</span>
+          <button data-edit-item="${item.id}" class="index-badge index-link" title="Edit this item">#${index}</button>
           <div class="flex1">
             <div class="text-sm truncate" style="font-weight:500;color:var(--ink);">${escapeHtml(item.name)}</div>
             <div class="text-xs muted" style="display:flex;min-width:0;"><span class="truncate" style="min-width:0;">${escapeHtml(supplier ? supplier.name : 'No supplier')} · ${escapeHtml(pickupWarehouse ? pickupWarehouse.name : 'varies')}</span>${availHtml}</div>
@@ -1266,7 +1271,9 @@ function renderCartLineRow(l, supplierIdForCard) {
 function renderIncomingSection(incomingOrders) {
   if (incomingOrders.length === 0) return '';
 
-  const availableDates = Array.from(new Set(incomingOrders.map((o) => o.expectedDate || todayStr()))).sort();
+  // Latest delivery date at the top (and in the dropdown), matching the
+  // newest-sent-first order within each date.
+  const availableDates = Array.from(new Set(incomingOrders.map((o) => o.expectedDate || todayStr()))).sort().reverse();
   const visibleDates = !state.incomingFilterDate
     ? availableDates
     : state.incomingCumulative
