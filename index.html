@@ -2204,7 +2204,8 @@ function revertDrawdownsForOrder(order) {
 /* ---- Auto burn rate: average daily order quantity over the last 60 days.
    Divides by the days of history actually present (from the first order the
    app has on record, capped at 60) — not a fixed 60 — so a young history
-   doesn't understate burn. Needs at least MIN_HISTORY_DAYS of history,
+   doesn't understate burn. Orders from suppliers ticked "Internal supplier"
+   are skipped. Needs at least MIN_HISTORY_DAYS of history,
    otherwise returns null and the manual figure is used. ---- */
 const BURN_WINDOW_DAYS = 60;
 const MIN_HISTORY_DAYS = 14;
@@ -2230,9 +2231,11 @@ function burnWindow() {
 function autoBurnRate(itemId) {
   const win = burnWindow();
   if (!win) return null;
+  const excluded = new Set(state.suppliers.filter((s) => s.isInternalSupplier).map((s) => s.id));
   const total = state.orders.reduce((sum, o) => {
     const d = orderDateStr(o);
     if (!d || d < win.start || d > win.end) return sum;
+    if (excluded.has(o.supplierId)) return sum; // internal supplier: not real usage
     return sum + (o.items || [])
       .filter((l) => l.itemId === itemId)
       .reduce((s, l) => s + (Number(l.qty) || 0), 0);
@@ -2510,6 +2513,11 @@ function renderSupplierForm(m) {
       <span class="text-sm">This is an internal account, not an outside supplier</span>
     </label>
     <p class="hint">For accounts like your own warehouse or company-held stock at a location. Messages get prefixed with the supplier's name so whoever receives it knows which account it's for.</p>
+    <label class="row" style="gap:8px;margin-bottom:12px;cursor:pointer;">
+      <input type="checkbox" id="f_isInternalSupplier" ${d.isInternalSupplier ? 'checked' : ''}>
+      <span class="text-sm">Internal supplier — don't count in daily average</span>
+    </label>
+    <p class="hint">Orders from this supplier are left out of the 60-day average daily usage. Leave unticked for internal accounts holding leftover goods transferred to you — those still count.</p>
     <div class="row gap2 mt2">
       <button data-close-modal class="btn" style="background:var(--tint);color:var(--muted);width:auto;padding:10px 16px;">Cancel</button>
       <button data-save-supplier class="btn btn-primary flex1" ${!canSave ? 'disabled' : ''}>Save</button>
@@ -2589,7 +2597,8 @@ function openSupplierModal(mode, supplier) {
   const draft = supplier ? {
     name: supplier.name, whatsapp: supplier.whatsapp || '',
     defaultWarehouseId: supplier.defaultWarehouseId || '', isInternalAccount: !!supplier.isInternalAccount,
-  } : { name: '', whatsapp: '', defaultWarehouseId: '', isInternalAccount: false };
+    isInternalSupplier: !!supplier.isInternalSupplier,
+  } : { name: '', whatsapp: '', defaultWarehouseId: '', isInternalAccount: false, isInternalSupplier: false };
   openModal({ type: 'supplier', mode, data: supplier, draft });
 }
 
@@ -2807,6 +2816,7 @@ function onModalClick(e) {
       id: state.modal.data ? state.modal.data.id : undefined,
       name: d.name.trim(), whatsapp: d.whatsapp.trim(),
       defaultWarehouseId: d.defaultWarehouseId, isInternalAccount: d.isInternalAccount,
+      isInternalSupplier: !!d.isInternalSupplier,
     });
     return;
   }
