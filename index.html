@@ -1858,6 +1858,9 @@ function renderRunwayDetailModal(m) {
   const rentExposures = rentExposuresForItem(item, state.shipments, sim);
   const lifecycle = batchLifecycle(sim);
   const burn = effectiveBurn(item);
+  const autoBurn = autoBurnRate(item.id);
+  const usingAuto = !!(autoBurn && autoBurn > 0);
+  const bw = burnWindow();
   const unitStr = item.unit ? ' ' + escapeHtml(item.unit) : '';
 
   const atWarehouse = rows.length ? rows[0].balance : 0;
@@ -1965,10 +1968,11 @@ function renderRunwayDetailModal(m) {
           style="width:66px;padding:6px 8px;border-radius:8px;border:1.5px solid var(--forest);background:#F2F7F5;color:var(--forest);font-weight:700;font-size:15px;">
       </div>
       <div>
-        <div class="text-xs muted mb1">Burn /day</div>
+        <div class="text-xs muted mb1">${usingAuto ? 'Manual (backup)' : 'Burn /day'}</div>
         <input type="number" inputmode="decimal" data-daily-burn-for="${item.id}" value="${item.dailyBurn ?? 0}" class="font-mono"
-          style="width:62px;padding:6px 8px;border-radius:8px;border:1.5px solid var(--forest);background:#F2F7F5;color:var(--forest);font-weight:700;font-size:15px;">
+          style="width:62px;padding:6px 8px;border-radius:8px;border:1.5px solid var(--forest);background:#F2F7F5;color:var(--forest);font-weight:700;font-size:15px;${usingAuto ? 'opacity:.55;' : ''}">
       </div>
+      <div><div class="text-xs muted">Avg /day${bw ? ` (${bw.days}d)` : ''}</div><div class="font-mono text-sm" style="font-weight:700;${usingAuto ? 'color:var(--forest);' : ''}">${usingAuto ? Math.round(autoBurn * 10) / 10 : (bw ? '0 — using manual' : `need ${MIN_HISTORY_DAYS}d history`)}</div></div>
       <div><div class="text-xs muted">At warehouse</div><div class="font-mono text-sm" style="font-weight:700;">${atWarehouse}</div></div>
       ${inTransitNow > 0 ? `<div><div class="text-xs muted">In transit</div><div class="font-mono text-sm" style="font-weight:700;color:#3B7EA1;">${inTransitNow}</div></div>` : ''}
       <div><div class="text-xs muted">Runs out</div><div class="text-sm" style="font-weight:700;">${runsOutLabel}</div></div>
@@ -2198,32 +2202,51 @@ function revertDrawdownsForOrder(order) {
 }
 
 /* ---- Auto burn rate: average daily order quantity over the last 60 days.
-   Falls back to the item's manual dailyBurn when there's no order history. ---- */
+   Divides by the days of history actually present (from the first order the
+   app has on record, capped at 60) — not a fixed 60 — so a young history
+   doesn't understate burn. Needs at least MIN_HISTORY_DAYS of history,
+   otherwise returns null and the manual figure is used. ---- */
 const BURN_WINDOW_DAYS = 60;
-function autoBurnRate(itemId) {
+const MIN_HISTORY_DAYS = 14;
+function orderDateStr(o) {
+  return o.expectedDate || (o.placedAt ? toLocalDateStr(new Date(o.placedAt)) : '');
+}
+function burnWindow() {
+  const today = todayStr();
+  let earliest = '';
+  state.orders.forEach((o) => {
+    const d = orderDateStr(o);
+    if (d && d <= today && (!earliest || d < earliest)) earliest = d;
+  });
+  if (!earliest) return null;
   const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - BURN_WINDOW_DAYS);
+  cutoff.setDate(cutoff.getDate() - (BURN_WINDOW_DAYS - 1));
   const cutoffStr = toLocalDateStr(cutoff);
+  const start = earliest > cutoffStr ? earliest : cutoffStr;
+  const days = -daysFromToday(start) + 1; // inclusive of today
+  if (days < MIN_HISTORY_DAYS) return null;
+  return { start, end: today, days };
+}
+function autoBurnRate(itemId) {
+  const win = burnWindow();
+  if (!win) return null;
   const total = state.orders.reduce((sum, o) => {
-    const d = o.expectedDate || (o.placedAt ? toLocalDateStr(new Date(o.placedAt)) : '');
-    if (!d || d < cutoffStr || d > todayStr()) return sum;
-    const line = o.items.find((l) => l.itemId === itemId);
-    return sum + (line ? (Number(line.qty) || 0) : 0);
+    const d = orderDateStr(o);
+    if (!d || d < win.start || d > win.end) return sum;
+    return sum + (o.items || [])
+      .filter((l) => l.itemId === itemId)
+      .reduce((s, l) => s + (Number(l.qty) || 0), 0);
   }, 0);
-  return total > 0 ? total / BURN_WINDOW_DAYS : 0;
+  return total / win.days;
 }
 
 /* ---- Burn rate.
-   Currently MANUAL ONLY — the figure you set on the item form.
-
-   autoBurnRate() below is kept but deliberately unused. It divides total
-   ordered by a fixed 60-day window, which is only meaningful once ~60 days of
-   real order history exists. Before that it badly understates burn (one order
-   of 10 today would read as 0.17/day) and, worse, would silently override the
-   manual figure with a wrong-but-plausible number. Switch it on once there's
-   genuine history — and make it divide by the days of history actually
-   present, not a hardcoded 60. ---- */
+   Uses the auto 60-day average when there's enough history and the item was
+   actually ordered in that window; otherwise falls back to the manual
+   "Burn /day" figure on the item. ---- */
 function effectiveBurn(item) {
+  const auto = autoBurnRate(item.id);
+  if (auto && auto > 0) return auto;
   return Number(item.dailyBurn) || 0;
 }
 
