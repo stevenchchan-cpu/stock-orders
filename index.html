@@ -481,10 +481,15 @@ function setCartSupplierOverride(lineId, supplierId) {
     // Moving to a different supplier means it's physically collected from
     // wherever THAT supplier's stock sits — any previously-set pickup
     // warehouse (auto or manual) no longer applies, so recompute it fresh.
-    // (Item-level pickup overrides still win here, same as everywhere else —
-    // effectivePickupWarehouseId already checks item.defaultWarehouseId first.)
+    // Switching to a DIFFERENT supplier uses that supplier's default warehouse
+    // (the item's own pickup default belongs to its usual supplier, so it
+    // doesn't apply). Switching back to the usual supplier restores the
+    // normal default (item first, then supplier).
     const next = { ...c };
-    const newPickup = effectivePickupWarehouseId(item, newSupplier);
+    const isOtherSupplier = item && supplierId && supplierId !== item.supplierId;
+    const newPickup = isOtherSupplier
+      ? (newSupplier && newSupplier.defaultWarehouseId) || ''
+      : effectivePickupWarehouseId(item, newSupplier);
     if (newPickup) next.pickupWarehouseId = newPickup;
     else delete next.pickupWarehouseId;
 
