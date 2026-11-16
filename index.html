@@ -104,6 +104,22 @@
      tap area than it looks, underlined so it reads as tappable. */
   .index-link { width:auto; min-width:28px; min-height:36px; margin:-8px -4px; padding:8px 4px; color:var(--forest); text-decoration:underline; text-decoration-color:var(--border); text-underline-offset:3px; }
 
+  /* Orders tab: the stock figure links to the item's Runway timeline. */
+  .avail-link { display:inline; padding:6px 2px; margin:-6px -2px; font:inherit; text-decoration:underline; text-decoration-color:var(--border); text-underline-offset:3px; }
+  .price-link { display:inline; font:inherit; text-align:left; padding:0; }
+
+  /* Small popups that sit over the page (cart price pad, purchase details). */
+  .popup-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.35); z-index:70; display:flex; align-items:flex-end; justify-content:center; }
+  .popup-sheet { background:var(--cream); width:100%; max-width:520px; border-radius:18px 18px 0 0; padding:16px 16px calc(16px + env(safe-area-inset-bottom)); max-height:85vh; overflow-y:auto; }
+  .pad-display { font-family:'JetBrains Mono',monospace; font-size:28px; font-weight:700; text-align:right; padding:10px 14px; border-radius:12px; background:#fff; border:1.5px solid var(--forest); color:var(--forest); margin-bottom:12px; min-height:56px; }
+  .pad-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+  .pad-grid button { height:54px; border-radius:12px; background:#fff; border:1px solid var(--border); font-size:22px; font-weight:600; color:var(--ink); display:flex; align-items:center; justify-content:center; }
+  .pad-grid button:active { background:var(--tint); }
+  .cost-table { width:100%; border-collapse:collapse; font-size:13px; }
+  .cost-table th { text-align:left; font-size:11px; font-weight:500; color:var(--muted); padding:6px 4px; border-bottom:1px solid var(--border); }
+  .cost-table td { padding:8px 4px; border-bottom:1px solid var(--border); vertical-align:top; }
+  .cost-table .num { text-align:right; font-family:'JetBrains Mono',monospace; white-space:nowrap; }
+
   svg { display:block; }
   ::placeholder { color:var(--faint); }
   [data-hide-when-empty]:empty { display:none; }
@@ -122,6 +138,7 @@
 <nav class="nav" id="bottomNav"></nav>
 
 <div id="modalRoot"></div>
+<div id="popupRoot"></div>
 <div id="toastRoot"></div>
 
 <script>
@@ -368,6 +385,7 @@ const state = {
   editingPickupFor: null,    // cart line id
   editingSupplierFor: null,  // cart line id
   revisingOrderId: null,     // order id currently open for post-send revision
+  popup: null,               // { type: 'pricePad', lineId, value } | { type: 'purchases', itemId } — small sheet over the page
   scrollPositions: {},       // tab -> last scroll position (session-only, so returning to a tab picks up where you left off)
   preSearchScroll: {},       // tab -> scroll position from just before a search started (restored when the search is cleared back to empty)
 };
@@ -522,11 +540,21 @@ function sendSupplierOrder(group, dateStr) {
       unit: l.item.unit,
       toOwnWarehouse: l.toOwnWarehouse || false,
       pickupWarehouseId: l.pickupWarehouseId || '',
+      ...(Number(l.price) > 0 ? { price: Number(l.price) } : {}),
     })),
     placedAt: new Date().toISOString(),
     expectedDate,
     status: 'pending',
   };
+  // Keep the latest price on the item too, so it outlives the order
+  // (orders are cleared out after 90 days).
+  const priced = lines.filter((l) => Number(l.price) > 0);
+  if (priced.length) {
+    updateItems(state.items.map((it) => {
+      const l = priced.filter((x) => x.itemId === it.id).pop();
+      return l ? { ...it, lastCost: { price: Number(l.price), date: expectedDate, supplierId: supplier.id } } : it;
+    }));
+  }
   // Key SKU link: deduct this order from the supplier's landed shipments
   // (earliest rent-free deadline first) and remember what was taken so
   // Undo can put it back exactly.
@@ -549,6 +577,7 @@ function cancelOrder(order) {
       ...(override ? { supplierOverride: override } : {}),
       ...(line.toOwnWarehouse ? { toOwnWarehouse: true } : {}),
       ...(line.pickupWarehouseId ? { pickupWarehouseId: line.pickupWarehouseId } : {}),
+      ...(Number(line.price) > 0 ? { price: Number(line.price) } : {}),
     };
   });
   updateCart([...state.cart, ...restoredLines]);
@@ -987,9 +1016,18 @@ function renderOrdersTab() {
       const rfColor = left < 0 ? 'var(--red-text)' : left <= 7 ? 'var(--amber-strong)' : 'var(--muted)';
       rfHtml = ` <span style="font-size:10px;font-weight:500;color:${rfColor};">${Number(dd)}/${Number(mm)}</span>`;
     }
+    // ω = nothing landed from any supplier, but a shipment is in transit.
+    const omega = !avail && hasInTransit(item);
+    // The whole stock figure is a link to this item's Runway timeline.
     const availHtml = avail
-      ? `<span class="shrink0" style="white-space:nowrap;"> · <span style="color:var(--forest);font-weight:600;">${avail.qty}</span>${rfHtml ? ` <span class="faint">|</span>${rfHtml}` : ''}${(avail.alpha || avail.beta) ? ` <span style="color:var(--forest);font-weight:600;">${[avail.alpha ? 'α' : '', avail.beta ? 'β' : ''].filter(Boolean).join(' ')}</span>` : ''}</span>`
-      : '';
+      ? `<span class="shrink0" style="white-space:nowrap;"> · <button data-open-runway-detail="${item.id}" class="avail-link"><span style="color:var(--forest);font-weight:600;">${avail.qty}</span>${rfHtml ? ` <span class="faint">|</span>${rfHtml}` : ''}${(avail.alpha || avail.beta) ? ` <span style="color:var(--forest);font-weight:600;">${[avail.alpha ? 'α' : '', avail.beta ? 'β' : ''].filter(Boolean).join(' ')}</span>` : ''}</button></span>`
+      : omega
+        ? `<span class="shrink0" style="white-space:nowrap;"> · <button data-open-runway-detail="${item.id}" class="avail-link"><span style="color:var(--forest);font-weight:600;">0</span> <span style="color:#3B7EA1;font-weight:600;">ω</span></button></span>`
+        : '';
+    const cost = displayCost(item);
+    const costHtml = cost
+      ? `<span style="font-size:10px;font-weight:600;white-space:nowrap;color:${cost.kind === 'avg' ? 'var(--forest)' : 'var(--muted)'};">${cost.kind === 'avg' ? 'avg ' : ''}${fmtMoney(cost.price)}</span>`
+      : `<span style="font-size:9px;text-transform:uppercase;letter-spacing:.03em;color:var(--forest);">Qty</span>`;
     return `
       <div class="card" data-order-row data-name="${escapeHtml(nameLower)}" data-code="${escapeHtml(codeLower)}">
         <div class="row" style="gap:10px;">
@@ -1001,7 +1039,7 @@ function renderOrdersTab() {
             ${hasIncoming ? `<div class="text-xs truncate font-mono muted" data-incoming-text>${incomingText}</div>` : ''}
           </div>
           <div class="shrink0" style="text-align:center;">
-            <span style="font-size:9px;text-transform:uppercase;letter-spacing:.03em;color:var(--forest);">Qty</span>
+            <div style="line-height:1.4;">${costHtml}</div>
             <div class="row" style="gap:6px;">
               <input type="number" inputmode="decimal" placeholder="0" value="${draft}" data-draft-qty="${item.id}"
                 class="qty-input" style="width:56px;">
@@ -1234,10 +1272,9 @@ function renderCartLineRow(l, supplierIdForCard) {
     <div class="text-sm" data-cart-line="${l.id}">
       <div class="row-between">
         <div class="flex1">
-          <span style="color:var(--ink-soft);">${escapeHtml(l.item.name)}</span>
+          <button data-edit-cart-price="${l.id}" class="price-link" style="color:var(--ink-soft);text-decoration:underline;text-decoration-color:var(--border);text-underline-offset:3px;">${escapeHtml(l.item.name)}</button>
           ${l.toOwnWarehouse ? `<span class="text-xs" style="margin-left:4px;font-weight:600;color:var(--amber-text);">(W)</span>` : ''}
           ${l.supplierOverride ? `<div class="text-xs" style="color:var(--amber-strong);">moved from ${escapeHtml((state.suppliers.find((s) => s.id === l.item.supplierId) || {}).name || 'original supplier')}</div>` : ''}
-          <div class="text-xs" style="color:${pickupWh ? 'var(--muted)' : 'var(--amber-strong)'};">${pickupWh ? escapeHtml(pickupWh.name) : 'no pickup location set'}</div>
         </div>
         <div class="row shrink0" style="gap:6px;">
           <div class="row" style="gap:4px;">
@@ -1252,6 +1289,7 @@ function renderCartLineRow(l, supplierIdForCard) {
           <button data-remove-line="${l.id}">${icon('x', 14, 'var(--faint)')}</button>
         </div>
       </div>
+          <div class="text-xs" style="display:flex;gap:4px;margin-top:1px;min-width:0;white-space:nowrap;"><span class="truncate" style="min-width:0;color:${pickupWh ? 'var(--muted)' : 'var(--amber-strong)'};">${pickupWh ? escapeHtml(pickupWh.name) : 'no pickup set'}</span><span class="faint">·</span><button data-edit-cart-price="${l.id}" class="price-link shrink0" style="${Number(l.price) > 0 ? 'color:var(--forest);font-weight:600;' : 'color:var(--faint);'}">${Number(l.price) > 0 ? fmtMoney(l.price) : '$ —'}</button></div>
       ${isEditingPickup ? `
         <div class="mt1" style="display:flex;">
           <select data-set-pickup="${l.id}" style="font-size:13px;padding:6px 8px;">
@@ -1790,6 +1828,7 @@ function renderRunwayTab() {
       detail = s != null ? `Covered until ${roughDateLabel(s)}` : 'Covered — no gaps or rent risk';
     }
     const supplier = state.suppliers.find((s) => s.id === item.supplierId);
+    const wac = weightedAvgCost(item);
     return `
       <button data-open-runway-detail="${item.id}" data-runway-row
         data-name="${escapeHtml((item.name || '').toLowerCase())}"
@@ -1801,7 +1840,10 @@ function renderRunwayTab() {
             <div class="text-sm truncate" style="font-weight:500;color:var(--ink);">${escapeHtml(item.name)}</div>
             <div class="text-xs truncate muted">${detail}</div>
           </div>
-          <span class="tag shrink0" style="background:${meta.bg};color:${meta.text};font-weight:600;">${meta.label}</span>
+          <div class="shrink0" style="text-align:right;">
+            <span class="tag" style="background:${meta.bg};color:${meta.text};font-weight:600;">${meta.label}</span>
+            ${wac ? `<div class="font-mono" style="font-size:11px;font-weight:600;color:var(--forest);margin-top:3px;">avg ${fmtMoney(wac.avg)}</div>` : ''}
+          </div>
         </div>
         <div style="margin-top:9px;">${renderCoverageBar(status.sim, { height: 11 })}</div>
       </button>`;
@@ -1974,6 +2016,7 @@ function renderRunwayDetailModal(m) {
       </div>
       <div><div class="text-xs muted">Avg /day${bw ? ` (${bw.days}d)` : ''}</div><div class="font-mono text-sm" style="font-weight:700;${usingAuto ? 'color:var(--forest);' : ''}">${usingAuto ? Math.round(autoBurn * 10) / 10 : (bw ? '0 — using manual' : `need ${MIN_HISTORY_DAYS}d history`)}</div></div>
       <div><div class="text-xs muted">At warehouse</div><div class="font-mono text-sm" style="font-weight:700;">${atWarehouse}</div></div>
+      ${(() => { const w = weightedAvgCost(item); return `<div><div class="text-xs muted">Avg cost</div><div class="font-mono text-sm" style="font-weight:700;color:var(--forest);">${w ? fmtMoney(w.avg) : '—'}</div></div>`; })()}
       ${inTransitNow > 0 ? `<div><div class="text-xs muted">In transit</div><div class="font-mono text-sm" style="font-weight:700;color:#3B7EA1;">${inTransitNow}</div></div>` : ''}
       <div><div class="text-xs muted">Runs out</div><div class="text-sm" style="font-weight:700;">${runsOutLabel}</div></div>
     </div>
@@ -2134,6 +2177,124 @@ function drawdownAvailability(item) {
     alpha: own.length > 1,      // another batch from this supplier
     beta: others.length > 0,    // another supplier holds stock too
   };
+}
+
+/* Omega: no landed stock from ANY supplier, but something is on the way
+   (a shipment not yet marked Landed, with quantity left). Key SKUs only. */
+function hasInTransit(item) {
+  if (!item || !item.keySku) return false;
+  return state.shipments.some((s) => s.itemId === item.id && !s.received && shipmentRemaining(s) > 0);
+}
+
+/* ============================================================
+   COSTS — all prices are per the item's own unit.
+   - Weighted average: landed batches that still have stock in the
+     warehouse (incl. goods claimed by orders not yet collected), weighted by
+     how much of each is left. Batches without an asking price are skipped.
+     In-transit batches never count.
+   - Latest cost: the most recent price typed on a cart line and sent.
+   ============================================================ */
+function fmtMoney(n) {
+  const r = Math.round((Number(n) || 0) * 100) / 100;
+  return '$' + r.toLocaleString('en-US', { maximumFractionDigits: 2 });
+}
+
+/* Storage rent: +$0.50 per unit for every month (or part of a month) a batch
+   has sat past its rent-free deadline. 1 day over = 1 month; exactly one
+   month over = 1 month; one month and a day = 2 months. */
+const RENT_PER_MONTH = 0.5;
+function monthsOverRentFree(deadline, today = todayStr()) {
+  if (!deadline || today <= deadline) return 0;
+  const [y, m, d] = deadline.split('-').map(Number);
+  let n = 0;
+  let mark = deadline;
+  while (mark < today && n < 600) {
+    n += 1;
+    const last = new Date(y, m - 1 + n + 1, 0).getDate(); // last day of that month
+    mark = toLocalDateStr(new Date(y, m - 1 + n, Math.min(d, last)));
+  }
+  return n;
+}
+function batchCost(s) {
+  const base = Number(s.askingPrice);
+  if (!(base > 0)) return null;
+  const months = monthsOverRentFree(s.rentFreeDeadline);
+  return { base, months, rent: months * RENT_PER_MONTH, total: base + months * RENT_PER_MONTH };
+}
+
+// Only what's genuinely still unclaimed in the warehouse counts: quantity
+// already drawn down by orders (collected or not) is left out.
+function weightedAvgCost(item) {
+  if (!item) return null;
+  let qty = 0, total = 0;
+  state.shipments.forEach((s) => {
+    if (s.itemId !== item.id || !s.received) return;
+    const c = batchCost(s);
+    if (!c) return;
+    const q = shipmentRemaining(s);
+    if (!(q > 0)) return;
+    qty += q; total += q * c.total;
+  });
+  return qty > 0 ? { avg: total / qty, qty } : null;
+}
+
+// Every sent order line with a price for this item, newest first.
+function orderPurchasesForItem(itemId) {
+  const rows = [];
+  state.orders.forEach((o) => {
+    (o.items || []).forEach((l) => {
+      if (l.itemId === itemId && Number(l.price) > 0) {
+        rows.push({ date: o.expectedDate || (o.placedAt || '').slice(0, 10), placedAt: o.placedAt || '', supplierName: o.supplierName || '', qty: l.qty, price: Number(l.price) });
+      }
+    });
+  });
+  return rows.sort((a, b) => b.placedAt.localeCompare(a.placedAt));
+}
+
+// Latest cart price for the item. Falls back to the copy kept on the item,
+// so it survives old orders being cleared out after 90 days.
+function latestCost(item) {
+  if (!item) return null;
+  const rows = orderPurchasesForItem(item.id);
+  if (rows.length) return { price: rows[0].price, date: rows[0].date };
+  if (item.lastCost && Number(item.lastCost.price) > 0) return { price: Number(item.lastCost.price), date: item.lastCost.date || '' };
+  return null;
+}
+
+// Orders tab: average if there's landed stock with a price, otherwise latest.
+function displayCost(item) {
+  const w = weightedAvgCost(item);
+  if (w) return { price: w.avg, kind: 'avg' };
+  const l = latestCost(item);
+  if (l) return { price: l.price, kind: 'last' };
+  return null;
+}
+
+// Purchase details popup (Edit item): sent orders with a price + landed
+// batches still in stock, newest first, max 10 lines.
+function purchaseDetailsForItem(item) {
+  const rows = orderPurchasesForItem(item.id).map((r) => ({
+    date: r.date, sortKey: r.placedAt || r.date, source: r.supplierName, qty: r.qty, price: r.price, kind: 'order',
+  }));
+  state.shipments.forEach((s) => {
+    if (s.itemId !== item.id || !s.received) return;
+    const q = shipmentRemaining(s);
+    if (!(q > 0)) return;
+    const sup = state.suppliers.find((x) => x.id === s.supplierId);
+    const c = batchCost(s);
+    const date = s.receivedDate || s.etaDate || '';
+    rows.push({
+      date, sortKey: date, source: s.header || (sup ? sup.name : 'Shipment'),
+      qty: q, price: c ? c.total : null, rentMonths: c ? c.months : 0, kind: 'stock',
+    });
+  });
+  return rows.sort((a, b) => (b.sortKey || '').localeCompare(a.sortKey || '')).slice(0, 10);
+}
+
+function shortDate(dateStr) {
+  if (!dateStr) return '—';
+  const [, mm, dd] = dateStr.split('-');
+  return `${Number(dd)}/${Number(mm)}`;
 }
 
 /* SPILLS ACROSS THE SAME SUPPLIER'S BATCHES. An order draws from the batch
@@ -2463,6 +2624,18 @@ function renderItemForm(m) {
       <div class="flex1">${fieldHtml('Default par level', `<input type="number" inputmode="decimal" id="f_par" value="${d.par}">`)}</div>
     </div>
     ${fieldHtml('Current stock', `<input type="number" inputmode="decimal" id="f_stock" value="${d.stock}">`)}
+    ${item ? (() => {
+      const w = weightedAvgCost(item);
+      const l = latestCost(item);
+      return `<div class="field"><label>Cost</label>
+        <button data-open-purchases="${item.id}" class="card" style="width:100%;text-align:left;padding:10px 12px;display:flex;align-items:center;gap:12px;">
+          <div class="flex1 row" style="gap:16px;">
+            <div><div class="text-xs muted">Avg (in stock)</div><div class="font-mono text-sm" style="font-weight:700;color:var(--forest);">${w ? fmtMoney(w.avg) : '—'}</div></div>
+            <div><div class="text-xs muted">Latest${l && l.date ? ' · ' + shortDate(l.date) : ''}</div><div class="font-mono text-sm" style="font-weight:700;">${l ? fmtMoney(l.price) : '—'}</div></div>
+          </div>
+          <span class="text-xs" style="color:var(--forest);font-weight:500;white-space:nowrap;">Details ›</span>
+        </button></div>`;
+    })() : ''}
     ${fieldHtml('Tags (optional)', `<input type="text" id="f_tagsText" value="${escapeHtml(d.tagsText)}" placeholder="e.g. slow-moving, frozen, seasonal">`)}
     <p class="hint">Comma-separated. Make up whatever labels are useful to you — you'll be able to filter the order list by them.</p>
     <label class="row" style="gap:8px;margin-bottom:12px;cursor:pointer;">
@@ -2575,6 +2748,125 @@ function renderDriverMessageModal() {
 
 
 /* ============================================================
+   POPUPS — small sheets over the page, separate from the full-screen
+   modal so they never disturb a form's unsaved typing.
+   ============================================================ */
+function openPopup(p) { state.popup = p; renderPopup(); }
+function closePopup() { state.popup = null; renderPopup(); }
+
+function renderPopup() {
+  const root = document.getElementById('popupRoot');
+  const p = state.popup;
+  if (!p) { root.innerHTML = ''; return; }
+  if (p.type === 'pricePad') root.innerHTML = renderPricePad(p);
+  else if (p.type === 'purchases') root.innerHTML = renderPurchaseDetails(p);
+}
+
+/* Cart price: own on-screen number pad (digits + decimal point only), so
+   the phone keyboard never pops up. */
+function renderPricePad(p) {
+  const line = state.cart.find((c) => c.id === p.lineId);
+  const item = line && state.items.find((i) => i.id === line.itemId);
+  if (!line || !item) return '';
+  const hint = displayCost(item);
+  const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', 'back'];
+  return `
+    <div class="popup-backdrop" data-popup-backdrop>
+      <div class="popup-sheet">
+        <div class="row-between mb2">
+          <div class="flex1">
+            <div class="text-sm truncate" style="font-weight:600;">${escapeHtml(item.name)}</div>
+            <div class="text-xs muted">Cost per ${escapeHtml(item.unit || 'unit')}${hint ? ` · ${hint.kind === 'avg' ? 'avg' : 'last'} ${fmtMoney(hint.price)}` : ''}</div>
+          </div>
+          <button data-close-popup class="modal-close">${icon('x', 18, 'var(--muted)')}</button>
+        </div>
+        <div class="pad-display" id="padDisplay">${p.value ? '$' + escapeHtml(p.value) : '<span class="faint">$0</span>'}</div>
+        <div class="pad-grid">
+          ${keys.map((k) => `<button data-pad-key="${k}">${k === 'back' ? '⌫' : k}</button>`).join('')}
+        </div>
+        <div class="row gap2" style="margin-top:12px;">
+          <button data-pad-clear class="btn" style="background:var(--tint);color:var(--muted);width:auto;padding:10px 16px;">Clear</button>
+          <button data-pad-save class="btn btn-primary flex1">Save</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function pressPadKey(k) {
+  const p = state.popup;
+  let v = p.value || '';
+  if (k === 'back') v = v.slice(0, -1);
+  else if (k === '.') { if (!v.includes('.')) v = (v || '0') + '.'; }
+  else {
+    const dec = v.split('.')[1];
+    if (dec != null && dec.length >= 2) return; // cents at most
+    if (v === '0') v = k; else v += k;
+    if (v.replace('.', '').length > 8) return;
+  }
+  p.value = v;
+  const el = document.getElementById('padDisplay');
+  if (el) el.innerHTML = v ? '$' + escapeHtml(v) : '<span class="faint">$0</span>';
+}
+
+function setCartPrice(lineId, price) {
+  updateCart(state.cart.map((c) => {
+    if (c.id !== lineId) return c;
+    const next = { ...c };
+    if (price > 0) next.price = price; else delete next.price;
+    return next;
+  }));
+}
+
+function renderPurchaseDetails(p) {
+  const item = state.items.find((i) => i.id === p.itemId);
+  if (!item) return '';
+  const rows = purchaseDetailsForItem(item);
+  const unitStr = item.unit ? ' ' + escapeHtml(item.unit) : '';
+  const body = rows.length
+    ? `<table class="cost-table">
+        <thead><tr><th>Date</th><th>From</th><th class="num">Qty</th><th class="num">Cost</th></tr></thead>
+        <tbody>${rows.map((r) => `
+          <tr>
+            <td style="white-space:nowrap;">${shortDate(r.date)}</td>
+            <td>${escapeHtml(r.source)}${r.kind === 'stock' ? ' <span class="tag" style="background:var(--green);color:var(--forest);">In stock</span>' : ''}</td>
+            <td class="num">${r.qty}${unitStr}</td>
+            <td class="num">${r.price != null ? fmtMoney(r.price) : '<span class="faint">—</span>'}${r.rentMonths ? `<div style="font-size:10px;color:var(--amber-strong);">incl. +${fmtMoney(r.rentMonths * RENT_PER_MONTH)} rent</div>` : ''}</td>
+          </tr>`).join('')}</tbody>
+      </table>
+      <p class="hint" style="margin-top:10px;">Latest 10. Orders show the price typed in the cart when sent. "In stock" rows are landed shipments from Runway: quantity not yet drawn down by orders, and cost including $0.50 per month past rent-free.</p>`
+    : `<p class="text-sm muted" style="padding:12px 0;">No purchase prices yet. Tap an item's name in the Cart to enter its price before sending.</p>`;
+  return `
+    <div class="popup-backdrop" data-popup-backdrop>
+      <div class="popup-sheet">
+        <div class="row-between mb2">
+          <div class="flex1">
+            <div class="text-sm" style="font-weight:600;">Purchase details</div>
+            <div class="text-xs muted truncate">${escapeHtml(item.name)}</div>
+          </div>
+          <button data-close-popup class="modal-close">${icon('x', 18, 'var(--muted)')}</button>
+        </div>
+        ${body}
+      </div>
+    </div>`;
+}
+
+function onPopupClick(e) {
+  const p = state.popup;
+  if (!p) return;
+  if (e.target.hasAttribute && e.target.hasAttribute('data-popup-backdrop')) { closePopup(); return; }
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  if (btn.hasAttribute('data-close-popup')) { closePopup(); return; }
+  if (btn.dataset.padKey) { pressPadKey(btn.dataset.padKey); return; }
+  if (btn.hasAttribute('data-pad-clear')) { p.value = ''; pressPadKey('back'); return; }
+  if (btn.hasAttribute('data-pad-save')) {
+    setCartPrice(p.lineId, parseFloat(p.value) || 0);
+    closePopup();
+    renderTab();
+  }
+}
+
+/* ============================================================
    OPEN-MODAL HELPERS — set up the initial draft object for each form
    ============================================================ */
 function openItemModal(mode, item, insertAfterId) {
@@ -2654,6 +2946,7 @@ function initEventListeners() {
   modalRoot.addEventListener('click', onModalClick);
   modalRoot.addEventListener('input', onModalInput);
   modalRoot.addEventListener('change', onModalChange);
+  document.getElementById('popupRoot').addEventListener('click', onPopupClick);
 }
 // renderTab()/renderModal() call these as no-ops now that listeners are global; kept for clarity at call sites.
 function wireTabEvents() {}
@@ -2685,6 +2978,11 @@ function onMainClick(e) {
     const line = state.cart.find((c) => c.id === lineId);
     if (line) setCartQty(lineId, Math.max(0, Math.round((line.qty + parseFloat(delta)) * 10) / 10));
     renderTab();
+    return;
+  }
+  if (btn.dataset.editCartPrice) {
+    const line = state.cart.find((c) => c.id === btn.dataset.editCartPrice);
+    if (line) openPopup({ type: 'pricePad', lineId: line.id, value: Number(line.price) > 0 ? String(line.price) : '' });
     return;
   }
   if (btn.dataset.toggleWarehouse) { toggleCartWarehouse(btn.dataset.toggleWarehouse); renderTab(); return; }
@@ -2808,6 +3106,7 @@ function onModalClick(e) {
     return;
   }
   if (btn && btn.dataset.deleteItem) { deleteItem(btn.dataset.deleteItem); return; }
+  if (btn && btn.dataset.openPurchases) { openPopup({ type: 'purchases', itemId: btn.dataset.openPurchases }); return; }
 
   if (btn && btn.hasAttribute('data-save-supplier')) {
     const d = state.modal.draft;
