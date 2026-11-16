@@ -2800,7 +2800,7 @@ function renderPricePad(p) {
         <div class="row-between mb2">
           <div class="flex1">
             <div class="text-sm truncate" style="font-weight:600;">${escapeHtml(item.name)}</div>
-            <div class="text-xs muted">${p.itemId ? 'Quoted price' : 'Cost'} per ${escapeHtml(item.unit || 'unit')}${hint ? ` · ${hint.kind === 'avg' ? 'avg' : 'last'} ${fmtMoney(hint.price)}` : ''}</div>
+            <div class="text-xs muted">${p.itemId ? 'Quoted price' : 'Cost'} per unit${hint ? ` · ${hint.kind === 'avg' ? 'avg' : 'last'} ${fmtMoney(hint.price)}` : ''}</div>
           </div>
           <button data-close-popup class="modal-close">${icon('x', 18, 'var(--muted)')}</button>
         </div>
