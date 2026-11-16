@@ -990,6 +990,7 @@ function renderOrdersTab() {
   }
 
   const incomingBreakdown = computeIncomingBreakdown(state.orders, state.orderDate);
+  const suggestionBase = computeSuggestionBase();
   const activeFilterFields = FILTER_FIELDS.filter((f) => f.getOptions(state.items, state.suppliers, state.warehouses).length > 0);
   let activeFilterDef = activeFilterFields.find((f) => f.key === state.filterField) || activeFilterFields[0];
 
@@ -1032,6 +1033,10 @@ function renderOrdersTab() {
       : omega
         ? `<span class="shrink0" style="white-space:nowrap;"> · <button data-open-runway-detail="${item.id}" class="avail-link"><span style="color:var(--forest);font-weight:600;">0</span> <span style="color:#3B7EA1;font-weight:600;">ω</span></button></span>`
         : '';
+    const sug = suggestedQty(suggestionBase, item.id, b.exact);
+    const sugHtml = sug
+      ? `<button data-fill-suggest="${item.id}:${sug.qty}" title="Avg ${Math.round(sug.avg * 10) / 10}/trading day (shop only)" style="margin-top:3px;font-size:10px;font-weight:600;color:var(--amber-strong);background:var(--amber-bg);border-radius:999px;padding:1px 8px;">sug ${sug.qty}</button>`
+      : '';
     const cost = displayCost(item);
     const costHtml = cost
       ? `<span style="font-size:10px;font-weight:600;white-space:nowrap;color:${cost.kind === 'avg' ? 'var(--forest)' : 'var(--muted)'};">${cost.kind === 'avg' ? 'avg ' : cost.kind === 'quote' ? 'quote ' : ''}${fmtMoney(cost.price)}</span>`
@@ -1055,6 +1060,7 @@ function renderOrdersTab() {
                 ${icon('plus', 15, '#fff')}
               </button>
             </div>
+            ${sugHtml}
           </div>
         </div>
       </div>`;
@@ -2417,6 +2423,50 @@ function autoBurnRate(itemId) {
   return total / win.days;
 }
 
+/* ---- Suggested order quantity (Orders tab).
+   Average quantity per trading day over the last 60 days, shop only:
+   - lines marked (W) for your own warehouse are left out
+   - orders from "Internal supplier" suppliers are left out
+   - a trading day = a day you sent at least one counted order, so closed
+     days (Sundays, holidays) don't drag the average down
+   Then minus what's already ordered or in the cart (non-W) for the order
+   date. Needs MIN_HISTORY_DAYS of history, same as the burn rate. ---- */
+function computeSuggestionBase() {
+  const win = burnWindow();
+  if (!win) return null;
+  const excluded = new Set(state.suppliers.filter((s) => s.isInternalSupplier).map((s) => s.id));
+  const tradingDays = new Set();
+  const totals = {};
+  state.orders.forEach((o) => {
+    const d = orderDateStr(o);
+    if (!d || d < win.start || d > win.end) return;
+    if (excluded.has(o.supplierId)) return;
+    let counted = false;
+    (o.items || []).forEach((l) => {
+      if (l.toOwnWarehouse) return;
+      const q = Number(l.qty) || 0;
+      if (q <= 0) return;
+      totals[l.itemId] = (totals[l.itemId] || 0) + q;
+      counted = true;
+    });
+    if (counted) tradingDays.add(d);
+  });
+  if (tradingDays.size === 0) return null;
+  const cartShop = {};
+  state.cart.forEach((c) => {
+    if (c.toOwnWarehouse) return;
+    cartShop[c.itemId] = (cartShop[c.itemId] || 0) + (Number(c.qty) || 0);
+  });
+  return { totals, tradingDays: tradingDays.size, cartShop };
+}
+function suggestedQty(base, itemId, alreadyOrdered) {
+  if (!base || !base.totals[itemId]) return null;
+  const avg = base.totals[itemId] / base.tradingDays;
+  const need = avg - (alreadyOrdered || 0) - (base.cartShop[itemId] || 0);
+  if (need < 0.5) return null;
+  return { qty: Math.max(1, Math.round(need)), avg };
+}
+
 /* ---- Burn rate.
    Uses the auto 60-day average when there's enough history and the item was
    actually ordered in that window; otherwise falls back to the manual
@@ -3055,6 +3105,14 @@ function onMainClick(e) {
     const line = state.cart.find((c) => c.id === lineId);
     if (line) setCartQty(lineId, Math.max(0, Math.round((line.qty + parseFloat(delta)) * 10) / 10));
     renderTab();
+    return;
+  }
+  if (btn.dataset.fillSuggest) {
+    const [itemId, qty] = btn.dataset.fillSuggest.split(':');
+    state.draftQty[itemId] = qty;
+    const input = document.querySelector(`[data-draft-qty="${itemId}"]`);
+    if (input) input.value = qty;
+    updateAddAllButton();
     return;
   }
   if (btn.dataset.quoteItem) {
