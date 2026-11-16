@@ -372,6 +372,7 @@ const state = {
   filterValue: '',
   onlyOrderedForDate: false,
   showWarehouses: false,
+  showBackup: false,
   showSuppliers: false,
   selectedWarehousesForDriverMsg: [],
   stockSearch: '',
@@ -1112,6 +1113,7 @@ function renderEmptyState(title, body, actionLabel, actionOnclick) {
 }
 
 function goToSetup() {
+  if (state.suppliers.length === 0) state.showSuppliers = true;
   setTab(state.suppliers.length === 0 ? 'suppliers' : 'stock');
 }
 
@@ -2469,7 +2471,9 @@ function pruneOldData() {
 function renderSuppliersTab() {
   const ordersForDate = state.orders.filter((o) => isStillIncoming(o) && (o.expectedDate || todayStr()) === state.orderDate);
 
-  const supplierRows = state.suppliers.map((s) => {
+  const supplierRows = [...state.suppliers]
+    .sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base', numeric: true }))
+    .map((s) => {
     const count = state.items.filter((i) => i.supplierId === s.id).length;
     const defaultWarehouse = state.warehouses.find((w) => w.id === s.defaultWarehouseId);
     const orderedQty = ordersForDate.filter((o) => o.supplierId === s.id).flatMap((o) => o.items).reduce((sum, l) => sum + l.qty, 0);
@@ -2509,23 +2513,19 @@ function renderSuppliersTab() {
 
   return `
     <div>
-      <button data-open-supplier-modal class="btn btn-primary mb2" style="display:flex;align-items:center;gap:6px;">${icon('plus', 16, '#fff')} Add supplier</button>
-      <div class="row gap2 mb2">
-        <button data-open-import class="btn flex1" style="background:var(--green);color:var(--forest);border:1px solid #B7CFC9;font-size:13px;">Import data</button>
-        <button data-export-data class="btn flex1" style="background:var(--tint);color:var(--muted);border:1px solid var(--border);font-size:13px;">Export backup</button>
-      </div>
       <input type="file" id="importFileInput" accept="application/json,.json" style="display:none;">
-      <p class="text-xs faint mb2">Import reads a file straight from your phone — nothing is sent anywhere. Export saves a backup file you can keep privately (e.g. in Files or Notes).</p>
 
       <button data-toggle-suppliers class="row-between" style="width:100%;margin-bottom:8px;">
         <span class="section-label" style="margin-bottom:0;">Suppliers (${state.suppliers.length})</span>
         ${icon(state.showSuppliers ? 'chevronUp' : 'chevronDown', 16, 'var(--faint)')}
       </button>
-      ${state.showSuppliers ? (
-        state.suppliers.length === 0
-          ? renderEmptyState('No suppliers yet', "Add a supplier with their WhatsApp number to start ordering.")
-          : `<div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px;">${supplierRows}</div>`
-      ) : ''}
+      ${state.showSuppliers ? `
+        <div>
+          <button data-open-supplier-modal class="btn btn-primary mb2" style="display:flex;align-items:center;gap:6px;">${icon('plus', 16, '#fff')} Add supplier</button>
+          ${state.suppliers.length === 0
+            ? renderEmptyState('No suppliers yet', "Add a supplier with their WhatsApp number to start ordering.")
+            : `<div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px;">${supplierRows}</div>`}
+        </div>` : ''}
 
       <button data-toggle-warehouses class="row-between" style="width:100%;margin-top:24px;margin-bottom:8px;">
         <span class="section-label" style="margin-bottom:0;">Storage warehouses (${state.warehouses.length})</span>
@@ -2549,6 +2549,19 @@ function renderSuppliersTab() {
                     <div class="text-xs" style="color:var(--amber-text);">${unassignedQty} unit${unassignedQty === 1 ? '' : 's'} ordered for ${formatDateLabel(state.orderDate)} ${unassignedQty === 1 ? "isn't" : "aren't"} assigned to any pickup warehouse.</div>
                   </div>` : ''}
               </div>`}
+        </div>` : ''}
+
+      <button data-toggle-backup class="row-between" style="width:100%;margin-top:24px;margin-bottom:8px;">
+        <span class="section-label" style="margin-bottom:0;">Import / export</span>
+        ${icon(state.showBackup ? 'chevronUp' : 'chevronDown', 16, 'var(--faint)')}
+      </button>
+      ${state.showBackup ? `
+        <div>
+          <div class="row gap2 mb2">
+            <button data-open-import class="btn flex1" style="background:var(--green);color:var(--forest);border:1px solid #B7CFC9;font-size:13px;">Import data</button>
+            <button data-export-data class="btn flex1" style="background:var(--tint);color:var(--muted);border:1px solid var(--border);font-size:13px;">Export backup</button>
+          </div>
+          <p class="text-xs faint mb2">Import reads a file straight from your phone — nothing is sent anywhere. Export saves a backup file you can keep privately (e.g. in Files or Notes).</p>
         </div>` : ''}
     </div>`;
 }
@@ -3093,6 +3106,7 @@ function onMainClick(e) {
   }
   if (btn.hasAttribute('data-export-data')) { exportDataToFile(); return; }
   if (btn.hasAttribute('data-toggle-suppliers')) { state.showSuppliers = !state.showSuppliers; renderTab(); return; }
+  if (btn.hasAttribute('data-toggle-backup')) { state.showBackup = !state.showBackup; renderTab(); return; }
   if (btn.hasAttribute('data-toggle-warehouses')) { state.showWarehouses = !state.showWarehouses; renderTab(); return; }
   if (btn.hasAttribute('data-open-warehouse-modal')) { openWarehouseModal('new', null); return; }
   if (btn.dataset.editWarehouseModal) { openWarehouseModal('edit', state.warehouses.find((w) => w.id === btn.dataset.editWarehouseModal)); return; }
