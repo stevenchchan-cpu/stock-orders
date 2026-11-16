@@ -440,7 +440,8 @@ function addToCart(itemId, qty) {
   const item = state.items.find((i) => i.id === itemId);
   const supplier = state.suppliers.find((s) => s.id === (item && item.supplierId));
   const pickupWarehouseId = effectivePickupWarehouseId(item, supplier);
-  updateCart([...state.cart, { id: uid(), itemId, qty, ...(pickupWarehouseId ? { pickupWarehouseId } : {}) }]);
+  const qp = quotedPriceFor(item);
+  updateCart([...state.cart, { id: uid(), itemId, qty, ...(pickupWarehouseId ? { pickupWarehouseId } : {}), ...(qp > 0 ? { price: qp } : {}) }]);
   state.draftQty[itemId] = '';
 }
 
@@ -452,7 +453,8 @@ function addAllToCart() {
     const item = state.items.find((i) => i.id === itemId);
     const supplier = state.suppliers.find((s) => s.id === (item && item.supplierId));
     const pickupWarehouseId = effectivePickupWarehouseId(item, supplier);
-    return { id: uid(), itemId, qty, ...(pickupWarehouseId ? { pickupWarehouseId } : {}) };
+    const qp = quotedPriceFor(item);
+    return { id: uid(), itemId, qty, ...(pickupWarehouseId ? { pickupWarehouseId } : {}), ...(qp > 0 ? { price: qp } : {}) };
   });
   updateCart([...state.cart, ...newLines]);
   entries.forEach(([itemId]) => { state.draftQty[itemId] = ''; });
@@ -1026,14 +1028,14 @@ function renderOrdersTab() {
         : '';
     const cost = displayCost(item);
     const costHtml = cost
-      ? `<span style="font-size:10px;font-weight:600;white-space:nowrap;color:${cost.kind === 'avg' ? 'var(--forest)' : 'var(--muted)'};">${cost.kind === 'avg' ? 'avg ' : ''}${fmtMoney(cost.price)}</span>`
+      ? `<span style="font-size:10px;font-weight:600;white-space:nowrap;color:${cost.kind === 'avg' ? 'var(--forest)' : 'var(--muted)'};">${cost.kind === 'avg' ? 'avg ' : cost.kind === 'quote' ? 'quote ' : ''}${fmtMoney(cost.price)}</span>`
       : `<span style="font-size:9px;text-transform:uppercase;letter-spacing:.03em;color:var(--forest);">Qty</span>`;
     return `
       <div class="card" data-order-row data-name="${escapeHtml(nameLower)}" data-code="${escapeHtml(codeLower)}">
         <div class="row" style="gap:10px;">
           <button data-edit-item="${item.id}" class="index-badge index-link" title="Edit this item">#${index}</button>
-          <div class="flex1">
-            <div class="text-sm truncate" style="font-weight:500;color:var(--ink);">${escapeHtml(item.name)}</div>
+          <div class="flex1" style="min-width:0;">
+            <button data-quote-item="${item.id}" class="price-link text-sm truncate" style="display:block;max-width:100%;font-weight:500;color:var(--ink);text-decoration:underline;text-decoration-color:var(--border);text-underline-offset:3px;" title="Enter a quoted price">${escapeHtml(item.name)}</button>
             <div class="text-xs muted" style="display:flex;min-width:0;"><span class="truncate" style="min-width:0;">${escapeHtml(supplier ? supplier.name : 'No supplier')} · ${escapeHtml(pickupWarehouse ? pickupWarehouse.name : 'varies')}</span>${availHtml}</div>
             ${tagsHtml}
             ${hasIncoming ? `<div class="text-xs truncate font-mono muted" data-incoming-text>${incomingText}</div>` : ''}
@@ -2256,6 +2258,8 @@ function orderPurchasesForItem(itemId) {
 function latestCost(item) {
   if (!item) return null;
   const rows = orderPurchasesForItem(item.id);
+  const q = item.quote && Number(item.quote.price) > 0 ? item.quote : null;
+  if (q && (!rows.length || (q.at || '') > (rows[0].placedAt || ''))) return { price: Number(q.price), date: q.date || '', quote: true };
   if (rows.length) return { price: rows[0].price, date: rows[0].date };
   if (item.lastCost && Number(item.lastCost.price) > 0) return { price: Number(item.lastCost.price), date: item.lastCost.date || '' };
   return null;
@@ -2263,6 +2267,8 @@ function latestCost(item) {
 
 // Orders tab: average if there's landed stock with a price, otherwise latest.
 function displayCost(item) {
+  const lq = latestCost(item);
+  if (lq && lq.quote) return { price: lq.price, kind: 'quote' };
   const w = weightedAvgCost(item);
   if (w) return { price: w.avg, kind: 'avg' };
   const l = latestCost(item);
@@ -2765,7 +2771,7 @@ function renderPopup() {
 /* Cart price: own on-screen number pad (digits + decimal point only), so
    the phone keyboard never pops up. */
 function renderPricePad(p) {
-  const line = p.orderId ? orderLineAt(p.orderId, p.idx) : state.cart.find((c) => c.id === p.lineId);
+  const line = p.itemId ? { itemId: p.itemId } : p.orderId ? orderLineAt(p.orderId, p.idx) : state.cart.find((c) => c.id === p.lineId);
   const item = line && state.items.find((i) => i.id === line.itemId);
   if (!line || !item) return '';
   const hint = displayCost(item);
@@ -2776,7 +2782,7 @@ function renderPricePad(p) {
         <div class="row-between mb2">
           <div class="flex1">
             <div class="text-sm truncate" style="font-weight:600;">${escapeHtml(item.name)}</div>
-            <div class="text-xs muted">Cost per ${escapeHtml(item.unit || 'unit')}${hint ? ` · ${hint.kind === 'avg' ? 'avg' : 'last'} ${fmtMoney(hint.price)}` : ''}</div>
+            <div class="text-xs muted">${p.itemId ? 'Quoted price' : 'Cost'} per ${escapeHtml(item.unit || 'unit')}${hint ? ` · ${hint.kind === 'avg' ? 'avg' : 'last'} ${fmtMoney(hint.price)}` : ''}</div>
           </div>
           <button data-close-popup class="modal-close">${icon('x', 18, 'var(--muted)')}</button>
         </div>
@@ -2806,6 +2812,21 @@ function pressPadKey(k) {
   p.value = v;
   const el = document.getElementById('padDisplay');
   if (el) el.innerHTML = v ? '$' + escapeHtml(v) : '<span class="faint">$0</span>';
+}
+
+// Quoted price typed on the Orders tab. Counts as the item's latest cost
+// until a newer priced order is sent, and pre-fills the cart price.
+function setItemQuote(itemId, price) {
+  updateItems(state.items.map((it) => {
+    if (it.id !== itemId) return it;
+    if (price > 0) return { ...it, quote: { price, date: todayStr(), at: new Date().toISOString() } };
+    const { quote, ...rest } = it;
+    return rest;
+  }));
+}
+function quotedPriceFor(item) {
+  const l = item ? latestCost(item) : null;
+  return l && l.quote ? l.price : 0;
 }
 
 function orderLineAt(orderId, idx) {
@@ -2896,7 +2917,8 @@ function onPopupClick(e) {
   if (btn.dataset.padKey) { pressPadKey(btn.dataset.padKey); return; }
   if (btn.hasAttribute('data-pad-clear')) { p.value = ''; pressPadKey('back'); return; }
   if (btn.hasAttribute('data-pad-save')) {
-    if (p.orderId) setOrderLinePrice(p.orderId, p.idx, parseFloat(p.value) || 0);
+    if (p.itemId) setItemQuote(p.itemId, parseFloat(p.value) || 0);
+    else if (p.orderId) setOrderLinePrice(p.orderId, p.idx, parseFloat(p.value) || 0);
     else setCartPrice(p.lineId, parseFloat(p.value) || 0);
     closePopup();
     renderTab();
@@ -3015,6 +3037,12 @@ function onMainClick(e) {
     const line = state.cart.find((c) => c.id === lineId);
     if (line) setCartQty(lineId, Math.max(0, Math.round((line.qty + parseFloat(delta)) * 10) / 10));
     renderTab();
+    return;
+  }
+  if (btn.dataset.quoteItem) {
+    const it = state.items.find((i) => i.id === btn.dataset.quoteItem);
+    const q = it && it.quote && Number(it.quote.price) > 0 ? String(it.quote.price) : '';
+    if (it) openPopup({ type: 'pricePad', itemId: it.id, value: q });
     return;
   }
   if (btn.dataset.editOrderPrice) {
