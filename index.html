@@ -124,6 +124,46 @@
   .cost-table td { padding:8px 4px; border-bottom:1px solid var(--border); vertical-align:top; }
   .cost-table .num { text-align:right; font-family:'JetBrains Mono',monospace; white-space:nowrap; }
 
+  /* Quote tab */
+  .q-chiprow { display:flex; gap:6px; flex-basis:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; scrollbar-width:none; }
+  .q-chiprow::-webkit-scrollbar { display:none; }
+  .q-chiprow > * { flex-shrink:0; }
+  .q-card { padding:8px 10px; border-radius:12px; }
+  .card.q-card + .card.q-card { margin-top:4px; }
+  .q-tick { width:22px; height:22px; border-radius:6px; border:1.5px solid #C9C2B2; background:#fff; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+  .q-tick.on { background:var(--forest); border-color:var(--forest); }
+  .q-main { text-align:left; min-width:0; display:block; padding:0; }
+  .q-off .q-main { opacity:.45; }
+  .q-name { font-size:15px; font-weight:600; color:var(--ink); }
+  .q-price { font-family:'JetBrains Mono',monospace; font-weight:700; font-size:15px; color:var(--forest); white-space:nowrap; }
+  .q-price small { font-family:'Inter',sans-serif; font-weight:500; font-size:11px; color:var(--muted); }
+  .q-sub { display:flex; gap:8px; align-items:center; font-size:12px; color:var(--muted); margin-top:2px; white-space:nowrap; overflow:hidden; }
+  .q-mono { font-family:'JetBrains Mono',monospace; }
+  .q-up { color:var(--red-text); font-weight:600; }
+  .q-down { color:#2E7D5B; font-weight:600; }
+  .q-mg { background:var(--green); color:var(--forest); border-radius:999px; padding:0 6px; font-weight:600; }
+  .q-mg.neg { background:var(--red-bg); color:var(--red-text); }
+  .q-link { color:var(--forest); font-weight:600; }
+  .q-warn { background:var(--amber-bg); color:var(--amber-text); border-radius:999px; padding:0 6px; font-weight:600; }
+  .q-cuts { font-size:12px; color:var(--ink); margin-top:2px; }
+  .q-cuts b { color:var(--forest); }
+  .q-setup { background:var(--amber-bg); color:var(--amber-text); border-radius:10px; padding:6px 10px; font-size:12px; margin-bottom:6px; }
+  .q-selall { display:flex; align-items:center; gap:8px; background:#fff; border:1px solid var(--border); border-radius:999px; padding:6px 12px 6px 8px; font-size:13px; font-weight:600; color:var(--forest); }
+  .q-gen { position:fixed; left:12px; right:12px; width:auto; bottom:calc(76px + env(safe-area-inset-bottom)); z-index:15; max-width:616px; margin:0 auto; box-shadow:0 4px 14px rgba(24,68,61,.3); }
+  .q-sheet .field { margin-bottom:8px; }
+  .q-sheet .field label { font-size:11px; margin-bottom:2px; }
+  .q-sheet input[type=text], .q-sheet input[type=number], .q-sheet select { padding:8px 10px; background:#fff; }
+  .q-pick { width:100%; display:flex; justify-content:space-between; gap:8px; text-align:left; padding:9px 10px; border:1px solid var(--border); border-radius:10px; background:#fff; font-size:14px; }
+  .q-range { width:100%; accent-color:var(--forest); -webkit-appearance:auto; appearance:auto; padding:0; border:none; background:none; }
+  .q-calc { background:#fff; border:1px solid var(--border); border-radius:10px; padding:7px 10px; margin-bottom:8px; }
+  .q-cuts-edit { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+  .q-cutchip { display:inline-flex; align-items:center; gap:3px; background:#fff; border:1px solid var(--border); border-radius:999px; padding:3px 6px 3px 10px; font-size:13px; }
+  .q-cutchip input { width:64px !important; padding:4px 6px !important; font-size:13px; }
+  .q-cutchip button { padding:4px; }
+  .q-addcut { width:auto !important; border-style:dashed !important; color:var(--forest); font-weight:600; padding:6px 10px !important; border-radius:999px !important; font-size:13px; }
+  .q-itemrow { width:100%; display:flex; align-items:center; gap:10px; padding:10px 4px; border-bottom:1px solid var(--border); font-size:14px; }
+  .q-itemrow.on { color:var(--forest); font-weight:600; }
+  .q-itemrow.off { opacity:.45; }
   svg { display:block; }
   ::placeholder { color:var(--faint); }
   [data-hide-when-empty]:empty { display:none; }
@@ -178,6 +218,7 @@ function icon(name, size, color, extra) {
     minus: '<line x1="5" y1="12" x2="19" y2="12"/>',
     trendingDown: '<polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/>',
     clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+    tag: '<path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>',
   };
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ${extra}>${paths[name] || ''}</svg>`;
 }
@@ -371,6 +412,18 @@ const state = {
   orders: loadJSON('orders', []),
   warehouses: loadJSON('warehouses', []),
   shipments: loadJSON('shipments', []),   // Key SKU contracted/spot shipments — see Runway tab
+  quoteLines: loadJSON('quoteLines', []), // Quote tab price-list lines — see QUOTE TAB section
+  quoteCats: loadJSON('quoteCats', null), // seeded on first run by ensureQuoteDefaults()
+  quoteCuts: loadJSON('quoteCuts', null),
+  company: loadJSON('company', {}),       // company details for the price list — phone only, never in code
+  quoteSetupHidden: loadJSON('quoteSetupHidden', false),
+  quoteLang: loadJSON('quoteLang', 'zh'),
+  quoteSearch: '',
+  quoteFilter: 'all',        // all | unselected | unclassed | up | down
+  quoteCatFilter: '',        // '' | category id | '_none'
+  showCompany: false,
+  showQuoteCats: false,
+  showQuoteCuts: false,
   tab: 'today',
   orderDate: defaultOrderDate(),
   draftQty: {},              // itemId -> string, not persisted (session-only, like the app version)
@@ -815,6 +868,10 @@ function exportDataToFile() {
     orders: state.orders,
     cart: state.cart,
     shipments: state.shipments,
+    quoteLines: state.quoteLines,
+    quoteCats: state.quoteCats,
+    quoteCuts: state.quoteCuts,
+    company: state.company,
   };
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -842,6 +899,10 @@ function importDataFromFile(file) {
       if (Array.isArray(data.orders)) updateOrders(data.orders);
       if (Array.isArray(data.cart)) updateCart(data.cart);
       if (Array.isArray(data.shipments)) updateShipments(data.shipments);
+      if (Array.isArray(data.quoteLines)) updateQuoteLines(data.quoteLines);
+      if (Array.isArray(data.quoteCats)) { state.quoteCats = data.quoteCats; persist('quoteCats'); }
+      if (Array.isArray(data.quoteCuts)) { state.quoteCuts = data.quoteCuts; persist('quoteCuts'); }
+      if (data.company && typeof data.company === 'object') { state.company = data.company; persist('company'); }
       renderTab();
       showToast('Data imported.');
     } catch (err) {
@@ -860,6 +921,7 @@ const TABS = [
   { key: 'cart', label: 'Cart', icon: 'cart', title: 'Cart' },
   { key: 'stock', label: 'Stock', icon: 'package', title: 'Stock' },
   { key: 'runway', label: 'Runway', icon: 'trendingDown', title: 'Key SKU Runway' },
+  { key: 'quote', label: 'Quote', icon: 'tag', title: 'Quote' },
   { key: 'suppliers', label: 'Setup', icon: 'users', title: 'Setup' },
 ];
 
@@ -928,6 +990,7 @@ function renderTabToolbar() {
       ${chip(state.runwayRisk === 'gap', 'Stockout', 'data-runway-risk="gap"')}
       ${chip(state.runwayRisk === 'rent', 'Rent', 'data-runway-risk="rent"')}`;
   }
+  if (state.tab === 'quote') return renderQuoteToolbar();
   return '';
 }
 
@@ -935,11 +998,13 @@ function renderTab() {
   const main = document.getElementById('mainContent');
   document.getElementById('pageTitle').textContent = TABS.find((t) => t.key === state.tab).title;
   document.getElementById('tabToolbar').innerHTML = renderTabToolbar();
-  document.getElementById('headerRight').innerHTML = state.tab === 'today' ? renderHeaderDatePill() : '';
+  if (state.tab === 'quote' && state.items.length) syncQuoteLines();
+  document.getElementById('headerRight').innerHTML = state.tab === 'today' ? renderHeaderDatePill() : state.tab === 'quote' && state.items.length ? renderQuoteCount() : '';
   if (state.tab === 'today') { main.innerHTML = renderOrdersTab(); filterOrderListRows(); }
   else if (state.tab === 'cart') { main.innerHTML = renderCartTab(); filterCartRows(); }
   else if (state.tab === 'stock') { main.innerHTML = renderStockTab(); filterStockRows(); }
   else if (state.tab === 'runway') { main.innerHTML = renderRunwayTab(); filterRunwayRows(); }
+  else if (state.tab === 'quote') main.innerHTML = renderQuoteTab();
   else if (state.tab === 'suppliers') main.innerHTML = renderSuppliersTab();
   renderNav(); // badge count may have changed
   wireTabEvents();
@@ -2602,6 +2667,8 @@ function renderSuppliersTab() {
               </div>`}
         </div>` : ''}
 
+      ${renderQuoteSetupSections()}
+
       <button data-toggle-backup class="row-between" style="width:100%;margin-top:24px;margin-bottom:8px;">
         <span class="section-label" style="margin-bottom:0;">Import / export</span>
         ${icon(state.showBackup ? 'chevronUp' : 'chevronDown', 16, 'var(--faint)')}
@@ -2642,6 +2709,7 @@ function renderModal() {
   else if (m.type === 'driver') root.innerHTML = renderDriverMessageModal();
   else if (m.type === 'shipment') root.innerHTML = renderShipmentForm(m);
   else if (m.type === 'runwayDetail') root.innerHTML = renderRunwayDetailModal(m);
+  else if (m.type === 'quotePreview') { root.innerHTML = renderQuotePreviewModal(); if (!m.started) { m.started = true; fillQuotePreview(); } }
   wireModalEvents();
 }
 
@@ -2830,6 +2898,8 @@ function renderPopup() {
   if (!p) { root.innerHTML = ''; return; }
   if (p.type === 'pricePad') root.innerHTML = renderPricePad(p);
   else if (p.type === 'purchases') root.innerHTML = renderPurchaseDetails(p);
+  else if (p.type === 'qLine') root.innerHTML = renderQuoteLineEditor(p);
+  else if (p.type === 'qItems') root.innerHTML = renderQuoteItemPicker(p);
 }
 
 /* Cart price: own on-screen number pad (digits + decimal point only), so
@@ -2984,6 +3054,7 @@ function onPopupClick(e) {
   const btn = e.target.closest('button');
   if (!btn) return;
   if (btn.hasAttribute('data-close-popup')) { closePopup(); return; }
+  if (handleQuotePopupClick(btn, p)) return;
   if (btn.dataset.padKey) { pressPadKey(btn.dataset.padKey); return; }
   if (btn.hasAttribute('data-pad-clear')) { p.value = ''; pressPadKey('back'); return; }
   if (btn.hasAttribute('data-pad-save')) {
@@ -3078,6 +3149,8 @@ function initEventListeners() {
   modalRoot.addEventListener('input', onModalInput);
   modalRoot.addEventListener('change', onModalChange);
   document.getElementById('popupRoot').addEventListener('click', onPopupClick);
+  document.getElementById('popupRoot').addEventListener('input', onPopupInput);
+  document.getElementById('popupRoot').addEventListener('change', onPopupChange);
 }
 // renderTab()/renderModal() call these as no-ops now that listeners are global; kept for clarity at call sites.
 function wireTabEvents() {}
@@ -3088,6 +3161,7 @@ function onMainClick(e) {
   if (t.id === 'clearFiltersBtn') { state.filterValue = ''; state.search = ''; state.onlyOrderedForDate = false; renderTab(); return; }
   const btn = t.closest('button');
   if (!btn) return;
+  if (handleQuoteMainClick(btn)) return;
 
   if (btn.dataset.addToCart) { addToCart(btn.dataset.addToCart, parseFloat(document.querySelector(`[data-draft-qty="${btn.dataset.addToCart}"]`).value) || 0); renderTab(); return; }
   if (btn.hasAttribute('data-add-all')) { addAllToCart(); renderTab(); return; }
@@ -3182,6 +3256,7 @@ function onMainClick(e) {
 
 function onMainInput(e) {
   const t = e.target;
+  if (handleQuoteMainInput(t)) return;
   if (t.dataset && t.dataset.draftQty) {
     state.draftQty[t.dataset.draftQty] = t.value;
     updateAddAllButton(); // keep the button live as you type — no re-render, so focus stays put
@@ -3195,6 +3270,7 @@ function onMainInput(e) {
 
 function onMainChange(e) {
   const t = e.target;
+  if (handleQuoteMainChange(t)) return;
   if (t.id === 'importFileInput') {
     const file = t.files && t.files[0];
     importDataFromFile(file);
@@ -3240,6 +3316,7 @@ function onModalClick(e) {
   const t = e.target;
   const btn = t.closest('button');
   if (btn && btn.hasAttribute('data-close-modal')) { closeModal(); return; }
+  if (btn && handleQuoteModalClick(btn)) return;
 
   if (btn && btn.hasAttribute('data-save-item')) {
     refreshItemDraftFromDom();
@@ -3409,8 +3486,820 @@ function onModalChange(e) {
 }
 
 /* ============================================================
+   QUOTE TAB — client price list
+   - Every active stock item gets its own quote line automatically. Lines can
+     group several stock items (priced from the most expensive one); a stock
+     item belongs to one line only. Lines with no stock item ("manual") are
+     for added-value goods that aren't in the stock list.
+   - Cost per stock unit = the Orders page cost (displayCost). × factor turns
+     it into cost per sale unit. Price = cost ÷ (1 − margin), capped at
+     cost + max $ profit, rounded UP to the next 10¢.
+   - baseCost is the cost per stock unit when the line was last saved. The
+     price is worked out from it, so it doesn't move by itself; the ↑/↓ arrow
+     shows when today's cost differs. Saving the line takes today's cost.
+   - Company details live only in this phone's storage (never in the code).
+   ============================================================ */
+const QUOTE_UNITS = ['磅', '斤', 'kg', '包', '隻', '盒', '餅', '箱', '件'];
+const QUOTE_UNIT_EN = { '磅': 'lb', '斤': 'catty', 'kg': 'kg', '包': 'pack', '隻': 'pc', '盒': 'box', '餅': 'block', '箱': 'carton', '件': 'pc' };
+
+function defaultQuoteCats() {
+  return [['豬肉類', 'Pork'], ['雞肉類', 'Chicken'], ['牛肉類', 'Beef'], ['其他(鴿,鴨,羊及鵝類)', 'Others (Pigeon, Duck, Lamb & Goose)'], ['海產類', 'Seafood'], ['丸及水類', 'Balls & Others']]
+    .map(([name, nameEn]) => ({ id: uid(), name, nameEn }));
+}
+function defaultQuoteCuts() {
+  return [['切片', 'Sliced'], ['切粒', 'Diced'], ['切件', 'Cut'], ['免治', 'Minced'], ['燒毛', 'Singed']]
+    .map(([name, nameEn]) => ({ id: uid(), name, nameEn }));
+}
+function ensureQuoteDefaults() {
+  if (!Array.isArray(state.quoteCats)) { state.quoteCats = defaultQuoteCats(); persist('quoteCats'); }
+  if (!Array.isArray(state.quoteCuts)) { state.quoteCuts = defaultQuoteCuts(); persist('quoteCuts'); }
+  if (!state.company || typeof state.company !== 'object') state.company = {};
+}
+
+function updateQuoteLines(next) { state.quoteLines = next; persist('quoteLines'); }
+
+/* ---------- maths ---------- */
+function qItemCost(item) {
+  const c = item ? displayCost(item) : null;
+  return c && Number(c.price) > 0 ? Number(c.price) : null;
+}
+// Highest cost among the line's stock items (per stock unit), or the manual cost.
+function qRawCost(itemIds, manualCost) {
+  let best = null, bestItem = null;
+  (itemIds || []).forEach((id) => {
+    const it = state.items.find((i) => i.id === id);
+    const c = qItemCost(it);
+    if (c != null && (best == null || c > best)) { best = c; bestItem = it; }
+  });
+  if (best == null && Number(manualCost) > 0) return { cost: Number(manualCost), item: null };
+  return best == null ? null : { cost: best, item: bestItem };
+}
+function qFactor(f) { const n = Number(f); return n > 0 ? n : 1; }
+function qRoundUp10(x) { return Math.ceil(Math.round(x * 1000) / 100 - 1e-9) / 10; }
+function qCapValue(cap) { return cap === '' || cap == null || !(Number(cap) >= 0) ? null : Number(cap); }
+function qPrice(costPerSaleUnit, margin, cap) {
+  if (!(costPerSaleUnit > 0)) return null;
+  const m = Math.min(Math.max(Number(margin) || 0, 0), 90) / 100;
+  let p = costPerSaleUnit / (1 - m);
+  const c = qCapValue(cap);
+  const capped = c != null && costPerSaleUnit + c < p;
+  if (capped) p = costPerSaleUnit + c;
+  return { price: qRoundUp10(p), beforeCap: costPerSaleUnit / (1 - m), capped };
+}
+function qLineInfo(line) {
+  const raw = qRawCost(line.itemIds, line.manualCost);
+  const f = qFactor(line.factor);
+  const cur = raw ? raw.cost * f : null;
+  const hasBase = Number(line.baseCost) > 0 && raw && raw.item;
+  const base = hasBase ? Number(line.baseCost) * f : cur;
+  const pr = base != null ? qPrice(base, line.margin, line.cap) : null;
+  let trend = '';
+  if (hasBase) {
+    const d = raw.cost - Number(line.baseCost);
+    if (d > 0.004) trend = 'up'; else if (d < -0.004) trend = 'down';
+  }
+  const price = pr ? pr.price : null;
+  const margin = price && cur != null ? (price - cur) / price * 100 : null;
+  return { raw, cur, base, price, trend, margin, oldCost: hasBase ? base : null };
+}
+function qMoney(n) { return (Math.round(n * 100) / 100).toFixed(2); }
+
+/* ---------- keep lines in step with the stock list ---------- */
+function syncQuoteLines() {
+  const itemIds = new Set(state.items.map((i) => i.id));
+  const claimed = new Set();
+  let changed = false;
+  let lines = (state.quoteLines || []).map((l) => {
+    const before = l.itemIds || [];
+    const ids = before.filter((id) => itemIds.has(id) && !claimed.has(id));
+    ids.forEach((id) => claimed.add(id));
+    if (ids.length !== before.length) { changed = true; return { ...l, itemIds: ids }; }
+    return l;
+  });
+  lines = lines.filter((l) => {
+    if (l.itemIds.length === 0 && !l.manual) { changed = true; return false; }
+    return true;
+  });
+  state.items.forEach((it) => {
+    if (claimed.has(it.id) || it.inactive) return;
+    lines.push({ id: uid(), name: it.name, nameEn: '', catId: '', unit: '', factor: 1, itemIds: [it.id], margin: 15, cap: null, baseCost: null, cuts: [], selected: false });
+    changed = true;
+  });
+  // First time a line has a cost, remember it as the starting point for the arrow.
+  lines = lines.map((l) => {
+    if (Number(l.baseCost) > 0) return l;
+    const raw = qRawCost(l.itemIds, null);
+    if (raw && raw.item) { changed = true; return { ...l, baseCost: raw.cost }; }
+    return l;
+  });
+  if (changed) updateQuoteLines(lines);
+}
+
+function qCat(id) { return (state.quoteCats || []).find((c) => c.id === id) || null; }
+function qCut(id) { return (state.quoteCuts || []).find((c) => c.id === id) || null; }
+function qItemOrder(line) {
+  let best = Infinity;
+  (line.itemIds || []).forEach((id) => { const i = state.items.findIndex((x) => x.id === id); if (i >= 0 && i < best) best = i; });
+  return best;
+}
+function qSortedLines(lines) {
+  return [...lines].sort((a, b) => qItemOrder(a) - qItemOrder(b));
+}
+function qLineSearchText(line) {
+  const codes = (line.itemIds || []).map((id) => { const it = state.items.find((i) => i.id === id); return it ? `${it.name} ${it.itemCode || ''}` : ''; }).join(' ');
+  return `${line.name || ''} ${line.nameEn || ''} ${codes}`.toLowerCase();
+}
+function qVisibleLines() {
+  const q = (state.quoteSearch || '').trim().toLowerCase();
+  return state.quoteLines.filter((l) => {
+    if (q && !qLineSearchText(l).includes(q)) return false;
+    const f = state.quoteFilter;
+    if (f === 'unselected' && l.selected) return false;
+    if (f === 'unclassed' && qCat(l.catId)) return false;
+    if (f === 'up' || f === 'down') { if (qLineInfo(l).trend !== f) return false; }
+    if (state.quoteCatFilter === '_none' && qCat(l.catId)) return false;
+    if (state.quoteCatFilter && state.quoteCatFilter !== '_none' && l.catId !== state.quoteCatFilter) return false;
+    return true;
+  });
+}
+
+/* ---------- Quote tab ---------- */
+function renderQuoteToolbar() {
+  if (state.items.length === 0) return '';
+  const f = state.quoteFilter;
+  const catOpts = (state.quoteCats || []).map((c) => `<option value="${c.id}" ${state.quoteCatFilter === c.id ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('');
+  const catOn = !!state.quoteCatFilter;
+  return `
+    <input type="search" id="quoteSearch" placeholder="Search name or code…" value="${escapeHtml(state.quoteSearch)}" style="flex-basis:100%;">
+    <div class="q-chiprow">
+    ${chip(f === 'all', 'All', 'data-q-filter="all"')}
+    ${chip(f === 'unselected', 'Unselected', 'data-q-filter="unselected"')}
+    ${chip(f === 'unclassed', 'Unclassed', 'data-q-filter="unclassed"')}
+    ${chip(f === 'up', '↑', 'data-q-filter="up"')}
+    ${chip(f === 'down', '↓', 'data-q-filter="down"')}
+    <select id="quoteCatFilter" class="btn-sm chip-btn" style="width:auto;border:none;padding:6px 10px;background:${catOn ? 'var(--ink)' : 'rgba(255,255,255,.9)'};color:${catOn ? '#fff' : 'var(--forest)'};font-weight:${catOn ? 600 : 500};">
+      <option value="">Class ▾</option>${catOpts}<option value="_none" ${state.quoteCatFilter === '_none' ? 'selected' : ''}>未分類</option>
+    </select>
+    </div>`;
+}
+function renderQuoteCount() {
+  const total = state.quoteLines.length;
+  const sel = state.quoteLines.filter((l) => l.selected).length;
+  return `<span id="quoteCount" style="font-size:12px;color:var(--forest-light);white-space:nowrap;">${sel} / ${total} selected</span>`;
+}
+function renderQuoteCard(l) {
+  const info = qLineInfo(l);
+  const cat = qCat(l.catId);
+  const needs = !cat || !l.unit;
+  const arrow = info.trend ? `<span class="q-${info.trend}">${info.trend === 'up' ? '↑' : '↓'} <span class="q-mono">${qMoney(info.oldCost)}</span></span>` : '';
+  const mg = info.margin != null ? `<span class="q-mg ${info.margin < 0 ? 'neg' : ''}">${info.margin.toFixed(1)}%</span>` : '';
+  const link = (l.itemIds || []).length > 1 ? `<span class="q-link">🔗${l.itemIds.length}</span>` : '';
+  const cost = info.cur != null ? `<span class="q-mono">$${qMoney(info.cur)}</span>` : '<span class="faint">No cost</span>';
+  const cuts = (l.cuts || []).filter((c) => qCut(c.cutId) && Number(c.price) > 0)
+    .map((c) => `${escapeHtml(qCut(c.cutId).name)} <b class="q-mono">${qMoney(Number(c.price))}</b>`).join(' · ');
+  return `
+    <div class="card q-card ${l.selected ? '' : 'q-off'}">
+      <div class="row" style="gap:10px;align-items:flex-start;">
+        <button data-q-tick="${l.id}" class="q-tick ${l.selected ? 'on' : ''}" aria-label="Tick">${l.selected ? icon('check', 13, '#fff') : ''}</button>
+        <button data-q-edit="${l.id}" class="flex1 q-main">
+          <div class="row-between" style="gap:8px;">
+            <span class="q-name truncate">${escapeHtml(l.name || '(no name)')}</span>
+            <span class="q-price">${info.price != null ? '$' + qMoney(info.price) : '—'}<small>${l.unit ? '/' + escapeHtml(l.unit) : ''}</small></span>
+          </div>
+          <div class="q-sub">${cost}${arrow}${mg}${link}${needs ? '<span class="q-warn">Class + unit</span>' : ''}</div>
+          ${cuts ? `<div class="q-cuts"><span class="faint">↳</span> ${cuts}</div>` : ''}
+        </button>
+      </div>
+    </div>`;
+}
+function renderQuoteTab() {
+  if (state.items.length === 0) return renderEmptyState('No stock items yet', 'Add stock items first. Each one appears here as a price-list line.');
+  syncQuoteLines();
+  const visible = qVisibleLines();
+  const cats = state.quoteCats || [];
+  const groups = cats.map((c) => ({ title: c.name, lines: qSortedLines(visible.filter((l) => l.catId === c.id)) }));
+  const unclassed = { title: '未分類', lines: qSortedLines(visible.filter((l) => !qCat(l.catId))), unclassed: true };
+  if (state.quoteSetupHidden) groups.push(unclassed); else groups.unshift(unclassed);
+  const unclassedCount = state.quoteLines.filter((l) => !qCat(l.catId)).length;
+  const allSel = visible.length > 0 && visible.every((l) => l.selected);
+  const selCount = state.quoteLines.filter((l) => l.selected).length;
+  const body = groups.filter((g) => g.lines.length).map((g) => `
+      <div class="section-label" style="margin:12px 4px 6px;">${escapeHtml(g.title)} <span class="faint" style="font-weight:500;">${g.lines.length}</span></div>
+      ${g.lines.map(renderQuoteCard).join('')}`).join('');
+  return `
+    ${state.quoteSetupHidden ? '' : `
+      <div class="row-between q-setup">
+        <span>Setup: unclassed first · <b>${unclassedCount} unclassed</b></span>
+        <button data-q-hide-setup aria-label="Hide">${icon('x', 14, 'var(--amber-text)')}</button>
+      </div>`}
+    <div class="row-between" style="margin:4px 0 2px;">
+      <button data-q-select-all class="q-selall">
+        <span class="q-tick ${allSel ? 'on' : ''}" style="width:18px;height:18px;">${allSel ? icon('check', 11, '#fff') : ''}</span>
+        ${allSel ? 'Unselect all' : 'Select all'}
+      </button>
+      <span class="text-xs faint">${visible.length === state.quoteLines.length ? 'All lines shown' : `${visible.length} shown`}</span>
+    </div>
+    ${body || '<div class="empty"><div class="body">Nothing matches.</div></div>'}
+    <button data-q-add-line class="btn btn-ghost mt2">${icon('plus', 14, 'var(--muted)')} Add line not in stock list</button>
+    <div style="height:70px;"></div>
+    <button data-q-generate class="btn btn-primary q-gen" ${selCount === 0 ? 'disabled' : ''}>Generate quote <span style="opacity:.8;font-weight:400;font-size:12px;">${selCount} item${selCount === 1 ? '' : 's'}</span></button>`;
+}
+function rerenderQuoteList() {
+  const main = document.getElementById('mainContent');
+  const y = window.scrollY;
+  main.innerHTML = renderQuoteTab();
+  const hr = document.getElementById('headerRight');
+  if (hr) hr.innerHTML = renderQuoteCount();
+  window.scrollTo(0, y);
+}
+
+/* ---------- edit line popup ---------- */
+function openQuoteLineEditor(line) {
+  const l = line || { id: null, name: '', nameEn: '', catId: '', unit: '', factor: 1, itemIds: [], margin: 15, cap: null, cuts: [], manual: true, manualCost: '' };
+  openPopup({
+    type: 'qLine', lineId: l.id,
+    draft: {
+      name: l.name || '', nameEn: l.nameEn || '', catId: l.catId || '', unit: l.unit || '',
+      factor: String(l.factor != null ? l.factor : 1), itemIds: [...(l.itemIds || [])],
+      margin: Number(l.margin) || 0, cap: l.cap == null ? '' : String(l.cap),
+      cuts: (l.cuts || []).map((c) => ({ ...c, price: c.price == null ? '' : String(c.price) })),
+      manualCost: l.manualCost == null ? '' : String(l.manualCost), manual: !!l.manual,
+      oldBase: Number(l.baseCost) > 0 ? Number(l.baseCost) : null,
+    },
+  });
+}
+function renderQuoteCalc(d) {
+  const raw = qRawCost(d.itemIds, d.manualCost);
+  if (!raw) return `<div class="text-xs muted">No cost yet. ${d.itemIds.length ? 'None of these stock items has a cost on the Orders page.' : 'Type a cost above.'}</div>`;
+  const f = qFactor(d.factor);
+  const cps = raw.cost * f;
+  const pr = qPrice(cps, d.margin, d.cap);
+  const m = Number(d.margin) || 0;
+  const changed = d.oldBase && raw.item && Math.abs(d.oldBase - raw.cost) > 0.004;
+  return `
+    ${changed ? `<div class="text-xs" style="color:var(--amber-text);margin-bottom:4px;">Cost changed ${qMoney(d.oldBase)} → ${qMoney(raw.cost)}. Saving updates the price.</div>` : ''}
+    <div class="row-between text-xs muted"><span class="q-mono">${qMoney(raw.cost)} × ${f} = ${qMoney(cps)} ÷ ${(100 - m).toFixed(1).replace(/\.0$/, '')}%</span><span class="q-mono">${qMoney(pr.beforeCap)}</span></div>
+    ${pr.capped ? `<div class="row-between text-xs" style="color:var(--amber-text);"><span>Max profit ${qMoney(qCapValue(d.cap))}</span><span class="q-mono">${qMoney(cps + qCapValue(d.cap))}</span></div>` : ''}
+    <div class="row-between" style="border-top:1px solid var(--border);margin-top:4px;padding-top:4px;font-weight:700;">
+      <span class="text-sm">Sale price <span class="text-xs muted" style="font-weight:400;">(up to 10¢)</span></span>
+      <span class="q-mono" style="color:var(--forest);">$${qMoney(pr.price)}${d.unit ? `<span class="text-xs muted" style="font-family:Inter,sans-serif;font-weight:500;">/${escapeHtml(d.unit)}</span>` : ''}</span>
+    </div>
+    ${raw.item && d.itemIds.length > 1 ? `<div class="text-xs faint" style="margin-top:2px;">Priced from ${escapeHtml(raw.item.name)} (highest cost)</div>` : ''}`;
+}
+function renderQuoteLineEditor(p) {
+  const d = p.draft;
+  const catOpts = `<option value="">— choose —</option>` + (state.quoteCats || []).map((c) => `<option value="${c.id}" ${d.catId === c.id ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('');
+  const unitOpts = `<option value="">—</option>` + QUOTE_UNITS.map((u) => `<option ${d.unit === u ? 'selected' : ''}>${u}</option>`).join('');
+  const itemNames = d.itemIds.map((id) => { const it = state.items.find((i) => i.id === id); return it ? `${it.name}${it.itemCode ? ' ' + it.itemCode : ''}` : ''; }).filter(Boolean);
+  const usedCuts = new Set(d.cuts.map((c) => c.cutId));
+  const cutAdd = (state.quoteCuts || []).filter((c) => !usedCuts.has(c.id));
+  const cutsHtml = d.cuts.map((c, i) => {
+    const cut = qCut(c.cutId);
+    if (!cut) return '';
+    return `<span class="q-cutchip">${escapeHtml(cut.name)} $<input type="number" inputmode="decimal" step="0.1" data-q-cut-price="${i}" value="${escapeHtml(c.price)}" placeholder="0.00"><button data-q-cut-remove="${i}" aria-label="Remove">${icon('x', 12, 'var(--red-text)')}</button></span>`;
+  }).join('');
+  return `
+    <div class="popup-backdrop" data-popup-backdrop>
+      <div class="popup-sheet q-sheet">
+        <div class="row-between mb2">
+          <button data-close-popup class="btn-sm btn-cancel">Cancel</button>
+          <div class="text-sm truncate" style="font-weight:600;max-width:55%;">${escapeHtml(d.name || 'New line')}</div>
+          <button data-q-save-line class="btn-sm btn-primary">Save</button>
+        </div>
+        <div class="row gap2">
+          <div class="field flex1"><label>Quote name 中文</label><input type="text" data-qd="name" value="${escapeHtml(d.name)}"></div>
+          <div class="field flex1"><label>English (PDF only)</label><input type="text" data-qd="nameEn" value="${escapeHtml(d.nameEn)}" placeholder="optional"></div>
+        </div>
+        <div class="row gap2">
+          <div class="field" style="flex:1.4;min-width:0;"><label>Class</label><select data-qd="catId">${catOpts}</select></div>
+          <div class="field" style="flex:.8;min-width:0;"><label>Unit</label><select data-qd="unit">${unitOpts}</select></div>
+          <div class="field" style="flex:1;min-width:0;"><label>× Factor</label><input type="number" inputmode="decimal" step="any" data-qd="factor" value="${escapeHtml(d.factor)}"></div>
+        </div>
+        <div class="field"><label>Stock items in this line</label>
+          <button data-q-pick-items class="q-pick">${itemNames.length ? escapeHtml(itemNames.join(' · ')) : '<span class="faint">None (not in stock list)</span>'}<span class="faint">›</span></button>
+        </div>
+        ${d.itemIds.length === 0 ? `<div class="field"><label>Cost per unit (typed by hand)</label><input type="number" inputmode="decimal" step="any" data-qd="manualCost" value="${escapeHtml(d.manualCost)}" placeholder="0.00"></div>` : ''}
+        <div class="row gap2" style="align-items:flex-end;">
+          <div class="field" style="flex:2;"><label>Gross margin <b id="qMarginLbl" style="color:var(--ink);">${(Number(d.margin) || 0).toFixed(1).replace(/\.0$/, '')}%</b></label>
+            <input type="range" min="0" max="50" step="0.5" data-qd="margin" value="${Number(d.margin) || 0}" class="q-range"></div>
+          <div class="field flex1"><label>Max $ profit</label><input type="number" inputmode="decimal" step="0.1" data-qd="cap" value="${escapeHtml(d.cap)}" placeholder="none"></div>
+        </div>
+        <div class="q-calc" id="qCalc">${renderQuoteCalc(d)}</div>
+        <div class="field"><label>Cuts / added value (price by hand)</label>
+          <div class="q-cuts-edit">${cutsHtml}
+            ${cutAdd.length ? `<select data-q-add-cut class="q-addcut"><option value="">＋ Add cut</option>${cutAdd.map((c) => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}</select>` : ''}
+          </div>
+        </div>
+        ${p.lineId && d.manual ? `<button data-q-delete-line class="btn" style="background:var(--red-bg);color:var(--red-text);margin-top:4px;">${icon('trash', 14, 'var(--red-text)')} Delete line</button>` : ''}
+      </div>
+    </div>`;
+}
+function qLineOwner(itemId, exceptLineId) {
+  return state.quoteLines.find((l) => l.id !== exceptLineId && (l.itemIds || []).includes(itemId)) || null;
+}
+function renderQuoteItemPicker(p) {
+  return `
+    <div class="popup-backdrop" data-popup-backdrop>
+      <div class="popup-sheet q-sheet">
+        <div class="row-between mb2">
+          <div class="text-sm" style="font-weight:600;">Stock items in ${escapeHtml(p.draft.name || 'this line')}</div>
+          <button data-q-items-done class="btn-sm btn-primary">Done</button>
+        </div>
+        <input type="search" data-q-item-search placeholder="Search stock items…" value="${escapeHtml(p.search || '')}" style="margin-bottom:8px;">
+        <div id="qItemList">${renderQuoteItemList(p)}</div>
+        <p class="text-xs faint mt2">Greyed items already belong to another line. One stock item, one line. The highest cost is used for the price.</p>
+      </div>
+    </div>`;
+}
+function renderQuoteItemList(p) {
+  const q = (p.search || '').trim().toLowerCase();
+  const raw = qRawCost(p.draft.itemIds, null);
+  const rows = state.items.filter((it) => (!it.inactive || p.draft.itemIds.includes(it.id)) && (!q || `${it.name} ${it.itemCode || ''}`.toLowerCase().includes(q)));
+  rows.sort((a, b) => (p.draft.itemIds.includes(b.id) ? 1 : 0) - (p.draft.itemIds.includes(a.id) ? 1 : 0));
+  return rows.slice(0, 80).map((it) => {
+    const on = p.draft.itemIds.includes(it.id);
+    const owner = on ? null : qLineOwner(it.id, p.lineId);
+    // An item on its own line can be pulled into this group (its own line then goes);
+    // an item already grouped with others in another line can't.
+    const blocked = !!(owner && owner.itemIds.length > 1);
+    const c = qItemCost(it);
+    return `<button ${blocked ? 'disabled' : `data-q-toggle-item="${it.id}"`} class="q-itemrow ${on ? 'on' : ''} ${blocked ? 'off' : ''}">
+      <span class="q-tick ${on ? 'on' : ''}" style="width:18px;height:18px;">${on ? icon('check', 11, '#fff') : ''}</span>
+      <span class="flex1 truncate" style="text-align:left;">${escapeHtml(it.name)} <span class="faint text-xs">${escapeHtml(it.itemCode || '')}</span></span>
+      <span class="text-xs ${blocked ? 'faint' : 'muted'}">${blocked ? 'in ' + escapeHtml(owner.name) : c != null ? '$' + qMoney(c) : 'no cost'}${on && raw && raw.item && raw.item.id === it.id && p.draft.itemIds.length > 1 ? ' ★' : ''}</span>
+    </button>`;
+  }).join('') || '<div class="text-sm muted">No matches.</div>';
+}
+function saveQuoteLineFromPopup() {
+  const p = state.popup;
+  const d = p.draft;
+  const raw = qRawCost(d.itemIds, null);
+  const firstItem = state.items.find((i) => i.id === d.itemIds[0]);
+  const name = d.name.trim() || (firstItem ? firstItem.name : '');
+  if (!name) { showToast('Give the line a name.'); return; }
+  const line = {
+    name, nameEn: d.nameEn.trim(), catId: d.catId, unit: d.unit, factor: qFactor(d.factor),
+    itemIds: [...d.itemIds], margin: Number(d.margin) || 0, cap: qCapValue(d.cap),
+    cuts: d.cuts.filter((c) => qCut(c.cutId)).map((c) => ({ cutId: c.cutId, price: Number(c.price) > 0 ? Number(c.price) : null })),
+    manual: d.itemIds.length === 0 ? true : !!d.manual && d.itemIds.length === 0,
+    manualCost: d.itemIds.length === 0 && Number(d.manualCost) > 0 ? Number(d.manualCost) : null,
+    baseCost: raw && raw.item ? raw.cost : null,
+  };
+  const taken = new Set(line.itemIds);
+  let lines = state.quoteLines.map((l) => (l.id === p.lineId ? l : { ...l, itemIds: (l.itemIds || []).filter((id) => !taken.has(id)) }));
+  if (p.lineId) lines = lines.map((l) => (l.id === p.lineId ? { ...l, ...line } : l));
+  else lines.push({ id: uid(), selected: true, ...line });
+  updateQuoteLines(lines);
+  closePopup();
+  syncQuoteLines();
+  rerenderQuoteList();
+}
+
+function handleQuotePopupClick(btn, p) {
+  if (!p || (p.type !== 'qLine' && p.type !== 'qItems')) return false;
+  if (btn.hasAttribute('data-q-save-line')) { saveQuoteLineFromPopup(); return true; }
+  if (btn.hasAttribute('data-q-pick-items')) { openPopup({ type: 'qItems', lineId: p.lineId, draft: p.draft, search: '' }); return true; }
+  if (btn.hasAttribute('data-q-items-done')) { openPopup({ type: 'qLine', lineId: p.lineId, draft: p.draft }); return true; }
+  if (btn.dataset.qToggleItem) {
+    const id = btn.dataset.qToggleItem;
+    const ids = p.draft.itemIds;
+    p.draft.itemIds = ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id];
+    if (!p.draft.name) { const it = state.items.find((i) => i.id === id); if (it) p.draft.name = it.name; }
+    const el = document.getElementById('qItemList');
+    if (el) el.innerHTML = renderQuoteItemList(p);
+    return true;
+  }
+  if (btn.dataset.qCutRemove != null && btn.dataset.qCutRemove !== '') {
+    p.draft.cuts.splice(Number(btn.dataset.qCutRemove), 1);
+    renderPopup();
+    return true;
+  }
+  if (btn.hasAttribute('data-q-delete-line')) {
+    if (confirm('Delete this line from the price list?')) {
+      updateQuoteLines(state.quoteLines.filter((l) => l.id !== p.lineId));
+      closePopup();
+      rerenderQuoteList();
+    }
+    return true;
+  }
+  return false;
+}
+function onPopupInput(e) {
+  const p = state.popup;
+  const t = e.target;
+  if (!p) return;
+  if (p.type === 'qLine') {
+    if (t.dataset.qd) {
+      p.draft[t.dataset.qd] = t.dataset.qd === 'margin' ? Number(t.value) : t.value;
+      if (t.dataset.qd === 'margin') { const l = document.getElementById('qMarginLbl'); if (l) l.textContent = Number(t.value).toFixed(1).replace(/\.0$/, '') + '%'; }
+      const c = document.getElementById('qCalc');
+      if (c) c.innerHTML = renderQuoteCalc(p.draft);
+      return;
+    }
+    if (t.dataset.qCutPrice != null) { const c = p.draft.cuts[Number(t.dataset.qCutPrice)]; if (c) c.price = t.value; return; }
+  }
+  if (p.type === 'qItems' && t.hasAttribute('data-q-item-search')) {
+    p.search = t.value;
+    const el = document.getElementById('qItemList');
+    if (el) el.innerHTML = renderQuoteItemList(p);
+  }
+}
+function onPopupChange(e) {
+  const p = state.popup;
+  const t = e.target;
+  if (!p || p.type !== 'qLine') return;
+  if (t.hasAttribute('data-q-add-cut')) {
+    if (t.value) { p.draft.cuts.push({ cutId: t.value, price: '' }); renderPopup(); }
+    return;
+  }
+  if (t.dataset.qd === 'catId' || t.dataset.qd === 'unit') {
+    p.draft[t.dataset.qd] = t.value;
+    const c = document.getElementById('qCalc');
+    if (c) c.innerHTML = renderQuoteCalc(p.draft);
+  }
+}
+
+/* ---------- Quote tab events (main + toolbar) ---------- */
+function handleQuoteMainClick(btn) {
+  if (btn.dataset.qFilter) { state.quoteFilter = btn.dataset.qFilter; renderTab(); return true; }
+  if (btn.dataset.qTick) {
+    updateQuoteLines(state.quoteLines.map((l) => (l.id === btn.dataset.qTick ? { ...l, selected: !l.selected } : l)));
+    rerenderQuoteList();
+    return true;
+  }
+  if (btn.dataset.qEdit) { const l = state.quoteLines.find((x) => x.id === btn.dataset.qEdit); if (l) openQuoteLineEditor(l); return true; }
+  if (btn.hasAttribute('data-q-select-all')) {
+    const visible = new Set(qVisibleLines().map((l) => l.id));
+    const allSel = state.quoteLines.filter((l) => visible.has(l.id)).every((l) => l.selected);
+    updateQuoteLines(state.quoteLines.map((l) => (visible.has(l.id) ? { ...l, selected: !allSel } : l)));
+    rerenderQuoteList();
+    return true;
+  }
+  if (btn.hasAttribute('data-q-hide-setup')) { state.quoteSetupHidden = true; persist('quoteSetupHidden'); rerenderQuoteList(); return true; }
+  if (btn.hasAttribute('data-q-add-line')) { openQuoteLineEditor(null); return true; }
+  if (btn.hasAttribute('data-q-generate')) { openModal({ type: 'quotePreview' }); return true; }
+  // Setup tab sections
+  if (btn.hasAttribute('data-toggle-company')) { state.showCompany = !state.showCompany; renderTab(); return true; }
+  if (btn.hasAttribute('data-toggle-qcats')) { state.showQuoteCats = !state.showQuoteCats; renderTab(); return true; }
+  if (btn.hasAttribute('data-toggle-qcuts')) { state.showQuoteCuts = !state.showQuoteCuts; renderTab(); return true; }
+  if (btn.hasAttribute('data-q-logo-pick')) { const el = document.getElementById('qLogoInput'); if (el) el.click(); return true; }
+  if (btn.hasAttribute('data-q-logo-remove')) { state.company = { ...state.company, logo: '' }; persist('company'); renderTab(); return true; }
+  if (btn.hasAttribute('data-q-show-setup')) { state.quoteSetupHidden = !state.quoteSetupHidden; persist('quoteSetupHidden'); renderTab(); return true; }
+  const listOps = [['qcat', 'quoteCats'], ['qcut', 'quoteCuts']];
+  for (const [k, key] of listOps) {
+    const add = btn.getAttribute(`data-${k}-add`);
+    if (add != null) { state[key] = [...state[key], { id: uid(), name: '', nameEn: '' }]; persist(key); renderTab(); return true; }
+    const mv = btn.getAttribute(`data-${k}-move`);
+    if (mv) {
+      const [id, dir] = mv.split(':');
+      const arr = [...state[key]];
+      const i = arr.findIndex((x) => x.id === id);
+      const j = dir === 'up' ? i - 1 : i + 1;
+      if (i >= 0 && j >= 0 && j < arr.length) { [arr[i], arr[j]] = [arr[j], arr[i]]; state[key] = arr; persist(key); renderTab(); }
+      return true;
+    }
+    const del = btn.getAttribute(`data-${k}-del`);
+    if (del) {
+      const used = k === 'qcat'
+        ? state.quoteLines.filter((l) => l.catId === del).length
+        : state.quoteLines.filter((l) => (l.cuts || []).some((c) => c.cutId === del)).length;
+      const msg = used ? `${used} line${used === 1 ? '' : 's'} use${used === 1 ? 's' : ''} this. ${k === 'qcat' ? 'They will become unclassed.' : 'It will be removed from them.'} Delete?` : 'Delete?';
+      if (!confirm(msg)) return true;
+      state[key] = state[key].filter((x) => x.id !== del); persist(key);
+      if (k === 'qcut') updateQuoteLines(state.quoteLines.map((l) => ({ ...l, cuts: (l.cuts || []).filter((c) => c.cutId !== del) })));
+      renderTab();
+      return true;
+    }
+  }
+  return false;
+}
+function handleQuoteMainInput(t) {
+  if (t.id === 'quoteSearch') { trackSearchScroll('quote', state.quoteSearch, t.value); state.quoteSearch = t.value; rerenderQuoteList(); return true; }
+  if (t.dataset && t.dataset.company) { state.company = { ...state.company, [t.dataset.company]: t.value }; persist('company'); return true; }
+  for (const [k, key] of [['qcat', 'quoteCats'], ['qcut', 'quoteCuts']]) {
+    const idN = t.getAttribute && t.getAttribute(`data-${k}-name`);
+    const idE = t.getAttribute && t.getAttribute(`data-${k}-en`);
+    if (idN || idE) {
+      state[key] = state[key].map((x) => (x.id === (idN || idE) ? { ...x, [idN ? 'name' : 'nameEn']: t.value } : x));
+      persist(key);
+      return true;
+    }
+  }
+  return false;
+}
+function handleQuoteMainChange(t) {
+  if (t.id === 'quoteCatFilter') { state.quoteCatFilter = t.value; renderTab(); return true; }
+  if (t.id === 'qLogoInput') {
+    const file = t.files && t.files[0];
+    t.value = '';
+    if (!file) return true;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, 600 / img.width, 300 / img.height);
+        const c = document.createElement('canvas');
+        c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        state.company = { ...state.company, logo: c.toDataURL('image/png') };
+        persist('company');
+        renderTab();
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+    return true;
+  }
+  return false;
+}
+
+/* ---------- Setup tab sections ---------- */
+function renderQuoteSetupSections() {
+  const co = state.company || {};
+  const f = (key, label, ph) => `<div class="field"><label>${label}</label><input type="text" data-company="${key}" value="${escapeHtml(co[key] || '')}" placeholder="${ph || ''}"></div>`;
+  const listRows = (k, arr) => arr.map((x, i) => `
+    <div class="card row" style="gap:6px;padding:8px;">
+      <div style="display:flex;flex-direction:column;">
+        <button data-${k}-move="${x.id}:up" ${i === 0 ? 'disabled style="opacity:.3"' : ''}>${icon('chevronUp', 16, 'var(--muted)')}</button>
+        <button data-${k}-move="${x.id}:down" ${i === arr.length - 1 ? 'disabled style="opacity:.3"' : ''}>${icon('chevronDown', 16, 'var(--muted)')}</button>
+      </div>
+      <input type="text" data-${k}-name="${x.id}" value="${escapeHtml(x.name)}" placeholder="中文" style="flex:1;min-width:0;padding:8px;">
+      <input type="text" data-${k}-en="${x.id}" value="${escapeHtml(x.nameEn || '')}" placeholder="English" style="flex:1;min-width:0;padding:8px;">
+      <button data-${k}-del="${x.id}" aria-label="Delete">${icon('trash', 16, 'var(--red-text)')}</button>
+    </div>`).join('');
+  const sec = (attr, open, label) => `
+    <button ${attr} class="row-between" style="width:100%;margin-top:24px;margin-bottom:8px;">
+      <span class="section-label" style="margin-bottom:0;">${label}</span>
+      ${icon(open ? 'chevronUp' : 'chevronDown', 16, 'var(--faint)')}
+    </button>`;
+  return `
+    ${sec('data-toggle-company', state.showCompany, 'Company details (price list)')}
+    ${state.showCompany ? `
+      <div>
+        <p class="text-xs faint mb2">Saved only on this phone. Never put into the app's code, so it doesn't appear on GitHub. It is included in Export backup, so keep that file private.</p>
+        <div class="field"><label>Logo</label>
+          <input type="file" id="qLogoInput" accept="image/*" style="display:none;">
+          <div class="row gap2">
+            ${co.logo ? `<img src="${co.logo}" style="max-height:48px;max-width:160px;border:1px solid var(--border);border-radius:6px;background:#fff;">` : ''}
+            <button data-q-logo-pick class="btn btn-sm btn-soft">${co.logo ? 'Change' : 'Choose image'}</button>
+            ${co.logo ? '<button data-q-logo-remove class="btn btn-sm btn-cancel">Remove</button>' : ''}
+          </div>
+        </div>
+        ${f('nameZh', 'Company name 中文')}
+        ${f('nameEn', 'Company name English')}
+        ${f('address', 'Address')}
+        ${f('phone', 'Phone')}
+        ${f('contact', 'Other contact', 'e.g. WhatsApp or email')}
+        ${f('footer', 'Footer note', 'e.g. 最低訂單 $500')}
+      </div>` : ''}
+    ${sec('data-toggle-qcats', state.showQuoteCats, `Quote categories (${(state.quoteCats || []).length})`)}
+    ${state.showQuoteCats ? `
+      <div>
+        <p class="text-xs faint mb2">This order is the order on the price list. English is optional; if blank, the English price list shows the Chinese name.</p>
+        <div style="display:flex;flex-direction:column;gap:6px;">${listRows('qcat', state.quoteCats || [])}</div>
+        <button data-qcat-add class="btn btn-ghost mt2">${icon('plus', 14, 'var(--muted)')} Add category</button>
+        <button data-q-show-setup class="btn btn-sm btn-cancel mt2">${state.quoteSetupHidden ? 'Show setup banner on Quote tab' : 'Hide setup banner on Quote tab'}</button>
+      </div>` : ''}
+    ${sec('data-toggle-qcuts', state.showQuoteCuts, `Cuts / added value (${(state.quoteCuts || []).length})`)}
+    ${state.showQuoteCuts ? `
+      <div>
+        <p class="text-xs faint mb2">Pick these on a quote line and type the price there.</p>
+        <div style="display:flex;flex-direction:column;gap:6px;">${listRows('qcut', state.quoteCuts || [])}</div>
+        <button data-qcut-add class="btn btn-ghost mt2">${icon('plus', 14, 'var(--muted)')} Add cut</button>
+      </div>` : ''}`;
+}
+
+/* ---------- PDF price list ---------- */
+function qPdfRows(lang) {
+  const en = lang === 'en';
+  const nm = (x) => (en && x.nameEn && x.nameEn.trim() ? x.nameEn.trim() : x.name);
+  const unitOf = (u) => (en ? (QUOTE_UNIT_EN[u] || u) : u);
+  const rows = [];
+  const lines = state.quoteLines.filter((l) => l.selected);
+  const skipped = [];
+  const sections = [...(state.quoteCats || []).map((c) => ({ cat: c, lines: lines.filter((l) => l.catId === c.id) })),
+    { cat: { name: '未分類', nameEn: 'Other' }, lines: lines.filter((l) => !qCat(l.catId)) }];
+  sections.forEach((s) => {
+    const out = [];
+    qSortedLines(s.lines).forEach((l) => {
+      const info = qLineInfo(l);
+      if (info.price == null) { skipped.push(l.name); return; }
+      out.push({ type: 'item', name: nm(l), price: qMoney(info.price), unit: unitOf(l.unit || '') });
+      (l.cuts || []).forEach((c) => {
+        const cut = qCut(c.cutId);
+        if (!cut || !(Number(c.price) > 0)) return;
+        out.push({ type: 'item', name: `${nm(l)} ${nm(cut)}`, price: qMoney(Number(c.price)), unit: unitOf(l.unit || '') });
+      });
+    });
+    if (out.length) rows.push({ type: 'sec', text: nm(s.cat) }, ...out);
+  });
+  return { rows, skipped };
+}
+const Q_PDF = { W: 1754, H: 1240, M: 60, rowH: 34, top: 210, bottom: 1240 - 100 };
+const Q_FONT = '-apple-system, "PingFang TC", "Heiti TC", "Noto Sans CJK TC", "Microsoft JhengHei", sans-serif';
+function qLayoutColumns(rows, lang) {
+  const perCol = Math.floor((Q_PDF.bottom - Q_PDF.top - Q_PDF.rowH) / Q_PDF.rowH);
+  const cont = lang === 'en' ? ' (cont.)' : ' (續)';
+  const cols = [];
+  let cur = [];
+  let sec = null;
+  rows.forEach((r) => {
+    if (r.type === 'sec') {
+      sec = r.text;
+      if (cur.length >= perCol - 1) { cols.push(cur); cur = []; }
+      cur.push(r);
+      return;
+    }
+    if (cur.length >= perCol) { cols.push(cur); cur = sec ? [{ type: 'sec', text: sec + cont }] : []; }
+    cur.push(r);
+  });
+  if (cur.length) cols.push(cur);
+  const pages = [];
+  for (let i = 0; i < cols.length; i += 3) pages.push(cols.slice(i, i + 3));
+  return pages.length ? pages : [[]];
+}
+function qFit(ctx, text, maxW) {
+  if (ctx.measureText(text).width <= maxW) return text;
+  let t = text;
+  while (t.length > 1 && ctx.measureText(t + '…').width > maxW) t = t.slice(0, -1);
+  return t + '…';
+}
+function qLoadImage(src) {
+  return new Promise((res) => { if (!src) { res(null); return; } const i = new Image(); i.onload = () => res(i); i.onerror = () => res(null); i.src = src; });
+}
+async function buildQuotePages(lang) {
+  const en = lang === 'en';
+  const { rows, skipped } = qPdfRows(lang);
+  const pages = qLayoutColumns(rows, lang);
+  const co = state.company || {};
+  const logo = await qLoadImage(co.logo);
+  const d = new Date();
+  const dateStr = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+  const { W, H, M, rowH, top } = Q_PDF;
+  const gap = 40;
+  const colW = (W - 2 * M - 2 * gap) / 3;
+  const out = pages.map((cols, pi) => {
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const x = c.getContext('2d');
+    x.fillStyle = '#fff'; x.fillRect(0, 0, W, H);
+    x.fillStyle = '#111'; x.textBaseline = 'middle';
+    // header
+    let hx = M;
+    if (logo) {
+      const h = 100, w = Math.min(320, logo.width * (h / logo.height));
+      const hh = logo.height * (w / logo.width);
+      x.drawImage(logo, M, 50 + (h - hh) / 2, w, hh);
+      hx = M + w + 24;
+    }
+    const coName = en ? (co.nameEn || co.nameZh || '') : (co.nameZh || co.nameEn || '');
+    if (coName) { x.font = `700 40px ${Q_FONT}`; x.textAlign = 'left'; x.fillText(qFit(x, coName, W - hx - 420), hx, 100); }
+    x.textAlign = 'right';
+    x.font = `700 44px ${Q_FONT}`; x.fillText(en ? 'Price List' : '報價單', W - M, 82);
+    x.font = `400 24px ${Q_FONT}`; x.fillStyle = '#444'; x.fillText(dateStr, W - M, 126);
+    x.fillStyle = '#111'; x.fillRect(M, 168, W - 2 * M, 3);
+    // columns
+    cols.forEach((col, ci) => {
+      const cx = M + ci * (colW + gap);
+      const priceR = cx + colW - 74, unitL = cx + colW - 64;
+      x.font = `600 20px ${Q_FONT}`; x.fillStyle = '#666';
+      x.textAlign = 'left'; x.fillText(en ? 'Item' : '貨品', cx + 6, top + rowH / 2);
+      x.textAlign = 'right'; x.fillText(en ? 'Price' : '單價', priceR, top + rowH / 2);
+      x.textAlign = 'left'; x.fillText(en ? 'Unit' : '單位', unitL, top + rowH / 2);
+      x.fillStyle = '#999'; x.fillRect(cx, top + rowH - 1, colW, 1.5);
+      col.forEach((r, ri) => {
+        const y = top + rowH * (ri + 1);
+        if (r.type === 'sec') {
+          x.fillStyle = '#333'; x.fillRect(cx, y + 3, colW, rowH - 4);
+          x.fillStyle = '#fff'; x.font = `700 21px ${Q_FONT}`; x.textAlign = 'left';
+          x.fillText(qFit(x, r.text, colW - 16), cx + 8, y + rowH / 2 + 1);
+          return;
+        }
+        x.fillStyle = '#111'; x.font = `400 22px ${Q_FONT}`; x.textAlign = 'left';
+        x.fillText(qFit(x, r.name, priceR - cx - 110), cx + 6, y + rowH / 2);
+        x.font = `600 22px ${Q_FONT}`; x.textAlign = 'right'; x.fillText('$' + r.price, priceR, y + rowH / 2);
+        x.font = `400 21px ${Q_FONT}`; x.textAlign = 'left'; x.fillStyle = '#333'; x.fillText(r.unit, unitL, y + rowH / 2);
+        x.fillStyle = '#ddd'; x.fillRect(cx, y + rowH - 1, colW, 1);
+      });
+    });
+    // footer
+    x.fillStyle = '#111'; x.fillRect(M, H - 80, W - 2 * M, 2);
+    x.font = `400 20px ${Q_FONT}`; x.fillStyle = '#333';
+    const left = [co.address, co.phone, co.contact].filter((s) => s && s.trim()).join('  ·  ');
+    x.textAlign = 'left'; x.fillText(qFit(x, left, W * 0.55), M, H - 50);
+    x.textAlign = 'center'; if (co.footer) x.fillText(qFit(x, co.footer, W * 0.25), W * 0.72, H - 50);
+    x.textAlign = 'right'; x.fillText(`${pi + 1} / ${pages.length}`, W - M, H - 50);
+    return c.toDataURL('image/jpeg', 0.9);
+  });
+  return { images: out, skipped, rowCount: rows.filter((r) => r.type === 'item').length };
+}
+function qDataUrlBytes(url) {
+  const b = atob(url.split(',')[1]);
+  const a = new Uint8Array(b.length);
+  for (let i = 0; i < b.length; i++) a[i] = b.charCodeAt(i);
+  return a;
+}
+// Minimal PDF: one A4-landscape page per JPEG image.
+function qJpegsToPdf(dataUrls, imgW, imgH) {
+  const enc = new TextEncoder();
+  const parts = [];
+  let len = 0;
+  const offsets = [];
+  const push = (x) => { const b = typeof x === 'string' ? enc.encode(x) : x; parts.push(b); len += b.length; };
+  const n = dataUrls.length;
+  const pw = 841.89, ph = 595.28;
+  push('%PDF-1.4\n%\xE2\xE3\xCF\xD3\n');
+  const obj = (id, body) => { offsets[id] = len; push(`${id} 0 obj\n`); body(); push('\nendobj\n'); };
+  const kids = [];
+  for (let i = 0; i < n; i++) kids.push(`${3 + i * 3} 0 R`);
+  obj(1, () => push('<< /Type /Catalog /Pages 2 0 R >>'));
+  obj(2, () => push(`<< /Type /Pages /Kids [${kids.join(' ')}] /Count ${n} >>`));
+  dataUrls.forEach((u, i) => {
+    const pid = 3 + i * 3, cid = pid + 1, iid = pid + 2;
+    const img = qDataUrlBytes(u);
+    const content = `q ${pw} 0 0 ${ph} 0 0 cm /Im0 Do Q`;
+    obj(pid, () => push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pw} ${ph}] /Resources << /XObject << /Im0 ${iid} 0 R >> >> /Contents ${cid} 0 R >>`));
+    obj(cid, () => push(`<< /Length ${content.length} >>\nstream\n${content}\nendstream`));
+    obj(iid, () => { push(`<< /Type /XObject /Subtype /Image /Width ${imgW} /Height ${imgH} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${img.length} >>\nstream\n`); push(img); push('\nendstream'); });
+  });
+  const total = 3 + n * 3;
+  const xref = len;
+  let x = `xref\n0 ${total}\n0000000000 65535 f \n`;
+  for (let i = 1; i < total; i++) x += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
+  push(x);
+  push(`trailer\n<< /Size ${total} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`);
+  return new Blob(parts, { type: 'application/pdf' });
+}
+
+let quotePdfCache = null; // { lang, blob, name } — built when the preview opens, so Share is instant
+function quotePdfName(lang) {
+  const d = todayStr().replace(/-/g, '');
+  return lang === 'en' ? `PriceList_${d}.pdf` : `報價單_${d}.pdf`;
+}
+function renderQuotePreviewModal() {
+  const en = state.quoteLang === 'en';
+  return modalShell('Price list', `
+    <div class="row-between mb2">
+      <div class="segmented">
+        <button data-q-lang="zh" class="${en ? '' : 'active'}">中文</button>
+        <button data-q-lang="en" class="${en ? 'active' : ''}">English</button>
+      </div>
+      <span class="text-xs muted" id="qPreviewInfo">Building…</span>
+    </div>
+    <div id="qPreviewWarn"></div>
+    <div id="qPreviewPages" style="display:flex;flex-direction:column;gap:10px;"></div>
+    <div style="height:70px;"></div>
+    <div style="position:fixed;left:16px;right:16px;bottom:calc(16px + env(safe-area-inset-bottom));max-width:608px;margin:0 auto;">
+      <button data-q-share class="btn btn-whatsapp" disabled>${icon('send', 15, '#fff')} Share PDF (WhatsApp)</button>
+    </div>`);
+}
+async function fillQuotePreview() {
+  const lang = state.quoteLang === 'en' ? 'en' : 'zh';
+  quotePdfCache = null;
+  if (document.fonts && document.fonts.ready) { try { await document.fonts.ready; } catch (e) { /* ignore */ } }
+  const res = await buildQuotePages(lang);
+  if (!state.modal || state.modal.type !== 'quotePreview' || (state.quoteLang === 'en' ? 'en' : 'zh') !== lang) return;
+  const blob = qJpegsToPdf(res.images, Q_PDF.W, Q_PDF.H);
+  quotePdfCache = { lang, blob, name: quotePdfName(lang) };
+  const pagesEl = document.getElementById('qPreviewPages');
+  if (pagesEl) pagesEl.innerHTML = res.images.map((u) => `<img src="${u}" style="width:100%;border:1px solid var(--border);border-radius:6px;box-shadow:0 2px 6px rgba(0,0,0,.08);background:#fff;">`).join('');
+  const info = document.getElementById('qPreviewInfo');
+  if (info) info.textContent = `${res.rowCount} lines · ${res.images.length} page${res.images.length === 1 ? '' : 's'}`;
+  const warn = document.getElementById('qPreviewWarn');
+  if (warn) warn.innerHTML = res.skipped.length ? `<div class="card mb2" style="background:var(--amber-bg);border-color:var(--amber-border);"><div class="text-xs" style="color:var(--amber-text);">Left out (no cost yet): ${escapeHtml(res.skipped.join('、'))}</div></div>` : '';
+  const btn = document.querySelector('[data-q-share]');
+  if (btn) btn.disabled = false;
+}
+async function shareQuotePdf() {
+  if (!quotePdfCache) return;
+  const { blob, name } = quotePdfCache;
+  const file = new File([blob], name, { type: 'application/pdf' });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file] }); return; } catch (e) { if (e && e.name === 'AbortError') return; }
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  showToast('PDF saved. Send it from Files to WhatsApp.');
+}
+function handleQuoteModalClick(btn) {
+  if (!state.modal || state.modal.type !== 'quotePreview') return false;
+  if (btn.dataset.qLang) {
+    state.quoteLang = btn.dataset.qLang; persist('quoteLang');
+    renderModal(); fillQuotePreview();
+    return true;
+  }
+  if (btn.hasAttribute('data-q-share')) { shareQuotePdf(); return true; }
+  return false;
+}
+
+
+/* ============================================================
    BOOTSTRAP
    ============================================================ */
+ensureQuoteDefaults();
 pruneOldData(); // trim orders >90 days old and long-finished shipments, keeps the app fast
 initEventListeners();
 setTab('today');
