@@ -3502,14 +3502,10 @@ function onModalChange(e) {
 const QUOTE_UNITS = ['磅', '斤', 'kg', '包', '隻', '盒', '餅', '箱', '件'];
 const QUOTE_UNIT_EN = { '磅': 'lb', '斤': 'catty', 'kg': 'kg', '包': 'pack', '隻': 'pc', '盒': 'box', '餅': 'block', '箱': 'carton', '件': 'pc' };
 
-function defaultQuoteCats() {
-  return [['豬肉類', 'Pork'], ['雞肉類', 'Chicken'], ['牛肉類', 'Beef'], ['其他(鴿,鴨,羊及鵝類)', 'Others (Pigeon, Duck, Lamb & Goose)'], ['海產類', 'Seafood'], ['丸及水類', 'Balls & Others']]
-    .map(([name, nameEn]) => ({ id: uid(), name, nameEn }));
-}
-function defaultQuoteCuts() {
-  return [['切片', 'Sliced'], ['切粒', 'Diced'], ['切件', 'Cut'], ['免治', 'Minced'], ['燒毛', 'Singed']]
-    .map(([name, nameEn]) => ({ id: uid(), name, nameEn }));
-}
+// Categories and cuts start empty: they're typed in on the phone (Setup tab),
+// so nothing about the business is kept in the code.
+function defaultQuoteCats() { return []; }
+function defaultQuoteCuts() { return []; }
 function ensureQuoteDefaults() {
   if (!Array.isArray(state.quoteCats)) { state.quoteCats = defaultQuoteCats(); persist('quoteCats'); }
   if (!Array.isArray(state.quoteCuts)) { state.quoteCuts = defaultQuoteCuts(); persist('quoteCuts'); }
@@ -4050,7 +4046,7 @@ function renderQuoteSetupSections() {
         ${f('address', 'Address')}
         ${f('phone', 'Phone')}
         ${f('contact', 'Other contact', 'e.g. WhatsApp or email')}
-        ${f('footer', 'Footer note', 'e.g. 最低訂單 $500')}
+        ${f('footer', 'Footer note', 'e.g. minimum order')}
       </div>` : ''}
     ${sec('data-toggle-qcats', state.showQuoteCats, `Quote categories (${(state.quoteCats || []).length})`)}
     ${state.showQuoteCats ? `
