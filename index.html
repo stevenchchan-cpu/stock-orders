@@ -149,7 +149,8 @@
   .q-cuts b { color:var(--forest); }
   .q-setup { background:var(--amber-bg); color:var(--amber-text); border-radius:10px; padding:6px 10px; font-size:12px; margin-bottom:6px; }
   .q-selall { display:flex; align-items:center; gap:8px; background:#fff; border:1px solid var(--border); border-radius:999px; padding:6px 12px 6px 8px; font-size:13px; font-weight:600; color:var(--forest); }
-  .q-gen { position:fixed; left:12px; right:12px; width:auto; bottom:calc(76px + env(safe-area-inset-bottom)); z-index:15; max-width:616px; margin:0 auto; box-shadow:0 4px 14px rgba(24,68,61,.3); }
+  .q-genbtn { display:flex; align-items:center; gap:6px; background:var(--cream); color:var(--forest); border-radius:999px; padding:7px 13px; font-size:13px; font-weight:700; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .q-genbtn:disabled { opacity:.5; }
   .q-sheet .field { margin-bottom:8px; }
   .q-sheet .field label { font-size:11px; margin-bottom:2px; }
   .q-sheet input[type=text], .q-sheet input[type=number], .q-sheet select { padding:8px 10px; background:#fff; }
@@ -217,6 +218,7 @@ function icon(name, size, color, extra) {
     minus: '<line x1="5" y1="12" x2="19" y2="12"/>',
     trendingDown: '<polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/>',
     clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+    fileText: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>',
     tag: '<path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>',
   };
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ${extra}>${paths[name] || ''}</svg>`;
@@ -3144,6 +3146,7 @@ function initEventListeners() {
   toolbar.addEventListener('change', onMainChange);
   const headerRight = document.getElementById('headerRight');
   headerRight.addEventListener('change', onMainChange);
+  headerRight.addEventListener('click', (e) => { const b = e.target.closest('button'); if (b && state.tab === 'quote') handleQuoteMainClick(b); });
   modalRoot.addEventListener('click', onModalClick);
   modalRoot.addEventListener('input', onModalInput);
   modalRoot.addEventListener('change', onModalChange);
@@ -3640,7 +3643,7 @@ function renderQuoteToolbar() {
 function renderQuoteCount() {
   const total = state.quoteLines.length;
   const sel = state.quoteLines.filter((l) => l.selected).length;
-  return `<span id="quoteCount" style="font-size:12px;color:var(--forest-light);white-space:nowrap;">${sel} / ${total} selected</span>`;
+  return `<button data-q-generate class="q-genbtn" ${sel === 0 ? 'disabled' : ''}>${icon('fileText', 14, 'var(--forest)')}Quote ${sel} / ${total}</button>`;
 }
 function renderQuoteCard(l) {
   const info = qLineInfo(l);
@@ -3677,7 +3680,6 @@ function renderQuoteTab() {
   if (state.quoteSetupHidden) groups.push(unclassed); else groups.unshift(unclassed);
   const unclassedCount = state.quoteLines.filter((l) => !qCat(l.catId)).length;
   const allSel = visible.length > 0 && visible.every((l) => l.selected);
-  const selCount = state.quoteLines.filter((l) => l.selected).length;
   const body = groups.filter((g) => g.lines.length).map((g) => `
       <div class="section-label" style="margin:12px 4px 6px;">${escapeHtml(g.title)} <span class="faint" style="font-weight:500;">${g.lines.length}</span></div>
       ${g.lines.map(renderQuoteCard).join('')}`).join('');
@@ -3696,8 +3698,7 @@ function renderQuoteTab() {
     </div>
     ${body || '<div class="empty"><div class="body">Nothing matches.</div></div>'}
     <button data-q-add-line class="btn btn-ghost mt2">${icon('plus', 14, 'var(--muted)')} Add line not in stock list</button>
-    <div style="height:70px;"></div>
-    <button data-q-generate class="btn btn-primary q-gen" ${selCount === 0 ? 'disabled' : ''}>Generate quote <span style="opacity:.8;font-weight:400;font-size:12px;">${selCount} item${selCount === 1 ? '' : 's'}</span></button>`;
+    <div style="height:12px;"></div>`;
 }
 function rerenderQuoteList() {
   const main = document.getElementById('mainContent');
