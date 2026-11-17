@@ -441,7 +441,7 @@ function addToCart(itemId, qty) {
   const item = state.items.find((i) => i.id === itemId);
   const supplier = state.suppliers.find((s) => s.id === (item && item.supplierId));
   const pickupWarehouseId = effectivePickupWarehouseId(item, supplier);
-  const qp = quotedPriceFor(item);
+  const qp = cartPrefillPrice(item);
   updateCart([...state.cart, { id: uid(), itemId, qty, ...(pickupWarehouseId ? { pickupWarehouseId } : {}), ...(qp > 0 ? { price: qp } : {}) }]);
   state.draftQty[itemId] = '';
 }
@@ -454,7 +454,7 @@ function addAllToCart() {
     const item = state.items.find((i) => i.id === itemId);
     const supplier = state.suppliers.find((s) => s.id === (item && item.supplierId));
     const pickupWarehouseId = effectivePickupWarehouseId(item, supplier);
-    const qp = quotedPriceFor(item);
+    const qp = cartPrefillPrice(item);
     return { id: uid(), itemId, qty, ...(pickupWarehouseId ? { pickupWarehouseId } : {}), ...(qp > 0 ? { price: qp } : {}) };
   });
   updateCart([...state.cart, ...newLines]);
@@ -2891,6 +2891,12 @@ function setItemQuote(itemId, price) {
     const { quote, ...rest } = it;
     return rest;
   }));
+}
+// Price pre-filled when an item goes into the cart: the latest of a quote
+// or the last price sent on an order (or the saved last cost).
+function cartPrefillPrice(item) {
+  const l = item ? latestCost(item) : null;
+  return l && Number(l.price) > 0 ? Number(l.price) : 0;
 }
 function quotedPriceFor(item) {
   const l = item ? latestCost(item) : null;
