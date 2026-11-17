@@ -154,7 +154,6 @@
   .q-sheet .field label { font-size:11px; margin-bottom:2px; }
   .q-sheet input[type=text], .q-sheet input[type=number], .q-sheet select { padding:8px 10px; background:#fff; }
   .q-pick { width:100%; display:flex; justify-content:space-between; gap:8px; text-align:left; padding:9px 10px; border:1px solid var(--border); border-radius:10px; background:#fff; font-size:14px; }
-  .q-range { width:100%; accent-color:var(--forest); -webkit-appearance:auto; appearance:auto; padding:0; border:none; background:none; }
   .q-calc { background:#fff; border:1px solid var(--border); border-radius:10px; padding:7px 10px; margin-bottom:8px; }
   .q-cuts-edit { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
   .q-cutchip { display:inline-flex; align-items:center; gap:3px; background:#fff; border:1px solid var(--border); border-radius:999px; padding:3px 6px 3px 10px; font-size:13px; }
@@ -3535,7 +3534,7 @@ function qRoundUp10(x) { return Math.ceil(Math.round(x * 1000) / 100 - 1e-9) / 1
 function qCapValue(cap) { return cap === '' || cap == null || !(Number(cap) >= 0) ? null : Number(cap); }
 function qPrice(costPerSaleUnit, margin, cap) {
   if (!(costPerSaleUnit > 0)) return null;
-  const m = Math.min(Math.max(Number(margin) || 0, 0), 90) / 100;
+  const m = Math.min(Math.max(Number(margin) || 0, -100), 90) / 100;
   let p = costPerSaleUnit / (1 - m);
   const c = qCapValue(cap);
   const capped = c != null && costPerSaleUnit + c < p;
@@ -3724,6 +3723,24 @@ function openQuoteLineEditor(line) {
     },
   });
 }
+function qMarginText(m) {
+  const n = Number(m) || 0;
+  return String(Math.round(n * 10) / 10);
+}
+// Sale price for the editor draft at today's cost (what Save will give).
+function qDraftPrice(d) {
+  const raw = qRawCost(d.itemIds, d.manualCost);
+  if (!raw) return null;
+  const pr = qPrice(raw.cost * qFactor(d.factor), d.margin, d.cap);
+  return pr ? pr.price : null;
+}
+function qDraftPriceText(d) { const p = qDraftPrice(d); return p == null ? '' : qMoney(p); }
+function refreshQuoteEditorNumbers(d, skip) {
+  if (skip !== 'price') { const el = document.getElementById('qPriceInput'); if (el) el.value = qDraftPriceText(d); }
+  if (skip !== 'margin') { const el = document.getElementById('qMarginInput'); if (el) el.value = qMarginText(d.margin); }
+  const c = document.getElementById('qCalc');
+  if (c) c.innerHTML = renderQuoteCalc(d);
+}
 function renderQuoteCalc(d) {
   const raw = qRawCost(d.itemIds, d.manualCost);
   if (!raw) return `<div class="text-xs muted">No cost yet. ${d.itemIds.length ? 'None of these stock items has a cost on the Orders page.' : 'Type a cost above.'}</div>`;
@@ -3735,7 +3752,7 @@ function renderQuoteCalc(d) {
   return `
     ${changed ? `<div class="text-xs" style="color:var(--amber-text);margin-bottom:4px;">Cost changed ${qMoney(d.oldBase)} → ${qMoney(raw.cost)}. Saving updates the price.</div>` : ''}
     <div class="row-between text-xs muted"><span class="q-mono">${qMoney(raw.cost)} × ${f} = ${qMoney(cps)} ÷ ${(100 - m).toFixed(1).replace(/\.0$/, '')}%</span><span class="q-mono">${qMoney(pr.beforeCap)}</span></div>
-    ${pr.capped ? `<div class="row-between text-xs" style="color:var(--amber-text);"><span>Max profit ${qMoney(qCapValue(d.cap))}</span><span class="q-mono">${qMoney(cps + qCapValue(d.cap))}</span></div>` : ''}
+    ${pr.capped ? `<div class="row-between text-xs" style="color:var(--amber-text);"><span>Max profit ${qMoney(qCapValue(d.cap))}${d.typedPrice ? ' limits your typed price' : ''}</span><span class="q-mono">${qMoney(cps + qCapValue(d.cap))}</span></div>` : ''}
     <div class="row-between" style="border-top:1px solid var(--border);margin-top:4px;padding-top:4px;font-weight:700;">
       <span class="text-sm">Sale price <span class="text-xs muted" style="font-weight:400;">(up to 10¢)</span></span>
       <span class="q-mono" style="color:var(--forest);">$${qMoney(pr.price)}${d.unit ? `<span class="text-xs muted" style="font-family:Inter,sans-serif;font-weight:500;">/${escapeHtml(d.unit)}</span>` : ''}</span>
@@ -3776,8 +3793,8 @@ function renderQuoteLineEditor(p) {
         </div>
         ${d.itemIds.length === 0 ? `<div class="field"><label>Cost per unit (typed by hand)</label><input type="number" inputmode="decimal" step="any" data-qd="manualCost" value="${escapeHtml(d.manualCost)}" placeholder="0.00"></div>` : ''}
         <div class="row gap2" style="align-items:flex-end;">
-          <div class="field" style="flex:2;"><label>Gross margin <b id="qMarginLbl" style="color:var(--ink);">${(Number(d.margin) || 0).toFixed(1).replace(/\.0$/, '')}%</b></label>
-            <input type="range" min="0" max="50" step="0.5" data-qd="margin" value="${Number(d.margin) || 0}" class="q-range"></div>
+          <div class="field flex1"><label>Gross margin %</label><input type="number" inputmode="decimal" step="0.1" id="qMarginInput" data-q-margin value="${escapeHtml(qMarginText(d.margin))}"></div>
+          <div class="field flex1"><label>Sale price $</label><input type="number" inputmode="decimal" step="0.1" id="qPriceInput" data-q-price value="${escapeHtml(qDraftPriceText(d))}" ${qRawCost(d.itemIds, d.manualCost) ? '' : 'disabled placeholder="no cost"'}></div>
           <div class="field flex1"><label>Max $ profit</label><input type="number" inputmode="decimal" step="0.1" data-qd="cap" value="${escapeHtml(d.cap)}" placeholder="none"></div>
         </div>
         <div class="q-calc" id="qCalc">${renderQuoteCalc(d)}</div>
@@ -3885,11 +3902,27 @@ function onPopupInput(e) {
   const t = e.target;
   if (!p) return;
   if (p.type === 'qLine') {
+    if (t.hasAttribute('data-q-margin')) {
+      p.draft.margin = Number(t.value) || 0;
+      refreshQuoteEditorNumbers(p.draft, 'margin');
+      return;
+    }
+    if (t.hasAttribute('data-q-price')) {
+      // Typed sale price -> work the margin back out from today's cost.
+      const raw = qRawCost(p.draft.itemIds, p.draft.manualCost);
+      const price = Number(t.value);
+      if (raw && price > 0) {
+        const cps = raw.cost * qFactor(p.draft.factor);
+        p.draft.margin = (price - cps) / price * 100;
+        p.draft.typedPrice = price;
+        refreshQuoteEditorNumbers(p.draft, 'price');
+      }
+      return;
+    }
     if (t.dataset.qd) {
-      p.draft[t.dataset.qd] = t.dataset.qd === 'margin' ? Number(t.value) : t.value;
-      if (t.dataset.qd === 'margin') { const l = document.getElementById('qMarginLbl'); if (l) l.textContent = Number(t.value).toFixed(1).replace(/\.0$/, '') + '%'; }
-      const c = document.getElementById('qCalc');
-      if (c) c.innerHTML = renderQuoteCalc(p.draft);
+      p.draft[t.dataset.qd] = t.value;
+      p.draft.typedPrice = null;
+      refreshQuoteEditorNumbers(p.draft);
       return;
     }
     if (t.dataset.qCutPrice != null) { const c = p.draft.cuts[Number(t.dataset.qCutPrice)]; if (c) c.price = t.value; return; }
@@ -3904,6 +3937,7 @@ function onPopupChange(e) {
   const p = state.popup;
   const t = e.target;
   if (!p || p.type !== 'qLine') return;
+  if (t.hasAttribute('data-q-price')) { refreshQuoteEditorNumbers(p.draft); return; }
   if (t.hasAttribute('data-q-add-cut')) {
     if (t.value) { p.draft.cuts.push({ cutId: t.value, price: '' }); renderPopup(); }
     return;
