@@ -29,6 +29,10 @@
   .header { background:var(--forest); padding:20px 20px 14px; position:sticky; top:0; z-index:10; }
   .header .eyebrow { font-size:11px; letter-spacing:.05em; text-transform:uppercase; color:var(--forest-light); }
   .header h1 { font-size:22px; font-weight:700; color:var(--cream); margin-bottom:12px; }
+  .header-row { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px; }
+  .header-row h1 { margin-bottom:0; }
+  .date-pill { position:relative; display:inline-flex; align-items:center; gap:6px; padding:6px 12px; border-radius:999px; background:var(--cream); color:var(--forest); font-size:14px; font-weight:600; white-space:nowrap; }
+  .date-pill input { position:absolute; inset:0; width:100%; height:100%; opacity:0; border:none; padding:0; margin:0; cursor:pointer; }
   .tab-toolbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
   .tab-toolbar input[type=search] { flex:1; min-width:120px; border:none; }
   .tab-toolbar .chip-btn { padding:6px 12px; border-radius:999px; font-size:12px; font-weight:600; white-space:nowrap; }
@@ -129,7 +133,10 @@
 
 <header class="header">
   <div class="eyebrow">Stock &amp; Orders</div>
-  <h1 id="pageTitle" class="font-display">Orders</h1>
+  <div class="header-row">
+    <h1 id="pageTitle" class="font-display">Orders</h1>
+    <div id="headerRight"></div>
+  </div>
   <div id="tabToolbar" class="tab-toolbar" data-hide-when-empty></div>
 </header>
 
@@ -151,6 +158,7 @@ function icon(name, size, color, extra) {
   size = size || 16; color = color || 'currentColor'; extra = extra || '';
   const paths = {
     plus: '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
+    calendar: '<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>',
     x: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
     trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>',
     send: '<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>',
@@ -927,6 +935,7 @@ function renderTab() {
   const main = document.getElementById('mainContent');
   document.getElementById('pageTitle').textContent = TABS.find((t) => t.key === state.tab).title;
   document.getElementById('tabToolbar').innerHTML = renderTabToolbar();
+  document.getElementById('headerRight').innerHTML = state.tab === 'today' ? renderHeaderDatePill() : '';
   if (state.tab === 'today') { main.innerHTML = renderOrdersTab(); filterOrderListRows(); }
   else if (state.tab === 'cart') { main.innerHTML = renderCartTab(); filterCartRows(); }
   else if (state.tab === 'stock') { main.innerHTML = renderStockTab(); filterStockRows(); }
@@ -1068,7 +1077,6 @@ function renderOrdersTab() {
 
   return `
     <div>
-      ${renderOrderDateHeader()}
 
       <section class="section">
         <div class="section-label" style="margin-bottom:8px;">Order list</div>
@@ -1100,19 +1108,15 @@ function renderOrdersTab() {
     </div>`;
 }
 
-function renderOrderDateHeader() {
-  const isToday = state.orderDate === todayStr();
+// Delivery date for this ordering session, shown top-right in the header.
+// Reads "Today" / "Tomorrow", otherwise e.g. "Thu 19 Nov". Tap to pick a date.
+function renderHeaderDatePill() {
   return `
-    <section class="section" style="background:var(--forest);border-radius:16px;padding:16px;">
-      <label class="block">
-        <span class="text-xs" style="display:block;margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em;color:var(--forest-light);">Ordering for delivery on</span>
-        <input type="date" id="orderDateInput" value="${state.orderDate}" min="${todayStr()}"
-          class="font-mono" style="width:100%;padding:10px 12px;border-radius:10px;border:none;background:var(--cream);color:var(--ink);font-size:15px;font-weight:600;">
-      </label>
-      <p class="text-xs" style="margin-top:8px;color:var(--forest-light);">
-        ${isToday ? 'Today — for suppliers who can still deliver same-day.' : `${formatDateLabel(state.orderDate)} — you can adjust this per supplier below if one has a different cutoff, holiday, or closure.`}
-      </p>
-    </section>`;
+    <label class="date-pill" title="Delivery date">
+      ${icon('calendar', 15, 'var(--forest)')}
+      <span>${escapeHtml(formatDateLabel(state.orderDate))}</span>
+      <input type="date" id="orderDateInput" value="${state.orderDate}" min="${todayStr()}" aria-label="Delivery date">
+    </label>`;
 }
 
 function renderEmptyState(title, body, actionLabel, actionOnclick) {
@@ -3068,6 +3072,8 @@ function initEventListeners() {
   toolbar.addEventListener('click', onMainClick);
   toolbar.addEventListener('input', onMainInput);
   toolbar.addEventListener('change', onMainChange);
+  const headerRight = document.getElementById('headerRight');
+  headerRight.addEventListener('change', onMainChange);
   modalRoot.addEventListener('click', onModalClick);
   modalRoot.addEventListener('input', onModalInput);
   modalRoot.addEventListener('change', onModalChange);
