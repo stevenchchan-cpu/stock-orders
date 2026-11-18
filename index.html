@@ -4149,16 +4149,20 @@ const Q_FONT = '-apple-system, "PingFang TC", "Heiti TC", "Noto Sans CJK TC", "M
 // Split a section's groups into 3 side-by-side columns, top to bottom, never
 // splitting a line from its cuts.
 function qSplitCols(groups) {
-  const total = groups.reduce((n, g) => n + g.length, 0);
-  const target = Math.ceil(total / 3);
-  const cols = [[], [], []];
-  let ci = 0;
-  groups.forEach((g) => {
-    const len = cols[ci].reduce((n, x) => n + x.length, 0);
-    if (ci < 2 && len > 0 && len + g.length > target) ci++;
-    cols[ci].push(g);
-  });
-  return cols;
+  // Best split into 3 runs (kept in order) so the tallest column is as short
+  // as possible; on ties, fill the left columns first.
+  const pre = [0];
+  groups.forEach((g) => pre.push(pre[pre.length - 1] + g.length));
+  const n = groups.length, sum = (a, b) => pre[b] - pre[a];
+  let best = null;
+  for (let i = 0; i <= n; i++) {
+    for (let j = i; j <= n; j++) {
+      const h = [sum(0, i), sum(i, j), sum(j, n)];
+      const key = [Math.max(...h), -h[0], -h[1]];
+      if (!best || key[0] < best.key[0] || (key[0] === best.key[0] && (key[1] < best.key[1] || (key[1] === best.key[1] && key[2] < best.key[2])))) best = { key, i, j };
+    }
+  }
+  return [groups.slice(0, best.i), groups.slice(best.i, best.j), groups.slice(best.j)];
 }
 function qColRows(col) { return col.reduce((n, g) => n + g.length, 0); }
 // Lay sections out as tables down the page. A table that doesn't fit in the
@@ -4182,8 +4186,12 @@ function qLayoutBlocks(sections, lang) {
     // Too tall for one page: cut into page-sized chunks (3 columns × pageRows).
     let chunk = [], used = [0, 0, 0], ci = 0, first = true;
     const flush = () => {
-      const c = chunk; chunk = []; used = [0, 0, 0]; ci = 0;
+      let c = chunk; chunk = []; used = [0, 0, 0]; ci = 0;
       if (!c.some((x) => x.length)) return;
+      // Spread this page's share evenly over the 3 columns (keep the packed
+      // version only if spreading would overflow a column).
+      const even = qSplitCols(c.flat());
+      if (Math.max(...even.map(qColRows)) <= pageRows) c = even;
       place({ title: first ? s.title : s.title + cont, cols: c, rows: Math.max(...c.map(qColRows)) });
       first = false;
     };
