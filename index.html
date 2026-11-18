@@ -160,6 +160,7 @@
   .q-cutchip { display:inline-flex; align-items:center; gap:3px; background:#fff; border:1px solid var(--border); border-radius:999px; padding:3px 6px 3px 10px; font-size:13px; }
   .q-cutchip input { width:64px !important; padding:4px 6px !important; font-size:13px; }
   .q-cutchip button { padding:4px; }
+  .q-cuttotal { font-size:12px; color:var(--forest); font-weight:600; }
   .q-addcut { width:auto !important; border-style:dashed !important; color:var(--forest); font-weight:600; padding:6px 10px !important; border-radius:999px !important; font-size:13px; }
   .q-itemrow { width:100%; display:flex; align-items:center; gap:10px; padding:10px 4px; border-bottom:1px solid var(--border); font-size:14px; }
   .q-itemrow.on { color:var(--forest); font-weight:600; }
@@ -3553,8 +3554,10 @@ function qLineInfo(line) {
   const pr = base != null ? qPrice(base, line.margin, line.cap) : null;
   let trend = '';
   if (hasBase) {
-    const d = raw.cost - Number(line.baseCost);
-    if (d > 0.004) trend = 'up'; else if (d < -0.004) trend = 'down';
+    // Compare the figures as shown (per sale unit, to the cent), so an arrow
+    // never appears between two identical-looking numbers.
+    const d = Math.round(cur * 100) - Math.round(base * 100);
+    if (d > 0) trend = 'up'; else if (d < 0) trend = 'down';
   }
   const price = pr ? pr.price : null;
   const margin = price && cur != null ? (price - cur) / price * 100 : null;
@@ -3653,8 +3656,9 @@ function renderQuoteCard(l) {
   const mg = info.margin != null ? `<span class="q-mg ${info.margin < 0 ? 'neg' : ''}">${info.margin.toFixed(1)}%</span>` : '';
   const link = (l.itemIds || []).length > 1 ? `<span class="q-link">🔗${l.itemIds.length}</span>` : '';
   const cost = info.cur != null ? `<span class="q-mono">$${qMoney(info.cur)}</span>` : '<span class="faint">No cost</span>';
-  const cuts = (l.cuts || []).filter((c) => qCut(c.cutId) && Number(c.price) > 0)
-    .map((c) => `${escapeHtml(qCut(c.cutId).name)} <b class="q-mono">${qMoney(Number(c.price))}</b>`).join(' · ');
+  // Cut price is an add-on; show the total the client will see.
+  const cuts = info.price == null ? '' : (l.cuts || []).filter((c) => qCut(c.cutId) && Number(c.price) > 0)
+    .map((c) => `${escapeHtml(qCut(c.cutId).name)} <b class="q-mono">${qMoney(info.price + Number(c.price))}</b>`).join(' · ');
   return `
     <div class="card q-card ${l.selected ? '' : 'q-off'}">
       <div class="row" style="gap:10px;align-items:flex-start;">
@@ -3735,12 +3739,17 @@ function qDraftPrice(d) {
   const pr = qPrice(raw.cost * qFactor(d.factor), d.margin, d.cap);
   return pr ? pr.price : null;
 }
+function qCutTotalText(d, c) {
+  const p = qDraftPrice(d);
+  return p != null && Number(c.price) > 0 ? '= ' + qMoney(p + Number(c.price)) : '';
+}
 function qDraftPriceText(d) { const p = qDraftPrice(d); return p == null ? '' : qMoney(p); }
 function refreshQuoteEditorNumbers(d, skip) {
   if (skip !== 'price') { const el = document.getElementById('qPriceInput'); if (el) el.value = qDraftPriceText(d); }
   if (skip !== 'margin') { const el = document.getElementById('qMarginInput'); if (el) el.value = qMarginText(d.margin); }
   const c = document.getElementById('qCalc');
   if (c) c.innerHTML = renderQuoteCalc(d);
+  (d.cuts || []).forEach((cut, i) => { const el = document.getElementById('qCutTotal' + i); if (el) el.textContent = qCutTotalText(d, cut); });
 }
 function renderQuoteCalc(d) {
   const raw = qRawCost(d.itemIds, d.manualCost);
@@ -3749,7 +3758,7 @@ function renderQuoteCalc(d) {
   const cps = raw.cost * f;
   const pr = qPrice(cps, d.margin, d.cap);
   const m = Number(d.margin) || 0;
-  const changed = d.oldBase && raw.item && Math.abs(d.oldBase - raw.cost) > 0.004;
+  const changed = d.oldBase && raw.item && Math.round(d.oldBase * f * 100) !== Math.round(cps * 100);
   return `
     ${changed ? `<div class="text-xs" style="color:var(--amber-text);margin-bottom:4px;">Cost changed ${qMoney(d.oldBase)} → ${qMoney(raw.cost)}. Saving updates the price.</div>` : ''}
     <div class="row-between text-xs muted"><span class="q-mono">${qMoney(raw.cost)} × ${f} = ${qMoney(cps)} ÷ ${(100 - m).toFixed(1).replace(/\.0$/, '')}%</span><span class="q-mono">${qMoney(pr.beforeCap)}</span></div>
@@ -3770,7 +3779,7 @@ function renderQuoteLineEditor(p) {
   const cutsHtml = d.cuts.map((c, i) => {
     const cut = qCut(c.cutId);
     if (!cut) return '';
-    return `<span class="q-cutchip">${escapeHtml(cut.name)} $<input type="number" inputmode="decimal" step="0.1" data-q-cut-price="${i}" value="${escapeHtml(c.price)}" placeholder="0.00"><button data-q-cut-remove="${i}" aria-label="Remove">${icon('x', 12, 'var(--red-text)')}</button></span>`;
+    return `<span class="q-cutchip">${escapeHtml(cut.name)} +$<input type="number" inputmode="decimal" step="0.1" data-q-cut-price="${i}" value="${escapeHtml(c.price)}" placeholder="0.00"><span class="q-cuttotal q-mono" id="qCutTotal${i}">${qCutTotalText(d, c)}</span><button data-q-cut-remove="${i}" aria-label="Remove">${icon('x', 12, 'var(--red-text)')}</button></span>`;
   }).join('');
   return `
     <div class="popup-backdrop" data-popup-backdrop>
@@ -3799,7 +3808,7 @@ function renderQuoteLineEditor(p) {
           <div class="field flex1"><label>Max $ profit</label><input type="number" inputmode="decimal" step="0.1" data-qd="cap" value="${escapeHtml(d.cap)}" placeholder="none"></div>
         </div>
         <div class="q-calc" id="qCalc">${renderQuoteCalc(d)}</div>
-        <div class="field"><label>Cuts / added value (price by hand)</label>
+        <div class="field"><label>Cuts / added value (+$ on top of the sale price; the quote shows the total)</label>
           <div class="q-cuts-edit">${cutsHtml}
             ${cutAdd.length ? `<select data-q-add-cut class="q-addcut"><option value="">＋ Add cut</option>${cutAdd.map((c) => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}</select>` : ''}
           </div>
@@ -3926,7 +3935,12 @@ function onPopupInput(e) {
       refreshQuoteEditorNumbers(p.draft);
       return;
     }
-    if (t.dataset.qCutPrice != null) { const c = p.draft.cuts[Number(t.dataset.qCutPrice)]; if (c) c.price = t.value; return; }
+    if (t.dataset.qCutPrice != null) {
+      const i = Number(t.dataset.qCutPrice);
+      const c = p.draft.cuts[i];
+      if (c) { c.price = t.value; const el = document.getElementById('qCutTotal' + i); if (el) el.textContent = qCutTotalText(p.draft, c); }
+      return;
+    }
   }
   if (p.type === 'qItems' && t.hasAttribute('data-q-item-search')) {
     p.search = t.value;
@@ -4101,53 +4115,86 @@ function renderQuoteSetupSections() {
 }
 
 /* ---------- PDF price list ---------- */
-function qPdfRows(lang) {
+// Price-list data: one section per category; each group is a line plus its cuts
+// (cut price = line price + add-on), kept together in one box.
+function qPdfData(lang) {
   const en = lang === 'en';
   const nm = (x) => (en && x.nameEn && x.nameEn.trim() ? x.nameEn.trim() : x.name);
   const unitOf = (u) => (en ? (QUOTE_UNIT_EN[u] || u) : u);
-  const rows = [];
   const lines = state.quoteLines.filter((l) => l.selected);
   const skipped = [];
-  const sections = [...(state.quoteCats || []).map((c) => ({ cat: c, lines: lines.filter((l) => l.catId === c.id) })),
+  const cats = [...(state.quoteCats || []).map((c) => ({ cat: c, lines: lines.filter((l) => l.catId === c.id) })),
     { cat: { name: '未分類', nameEn: 'Other' }, lines: lines.filter((l) => !qCat(l.catId)) }];
-  sections.forEach((s) => {
-    const out = [];
+  const sections = [];
+  cats.forEach((s) => {
+    const groups = [];
     qSortedLines(s.lines).forEach((l) => {
       const info = qLineInfo(l);
       if (info.price == null) { skipped.push(l.name); return; }
-      out.push({ type: 'item', name: nm(l), price: qMoney(info.price), unit: unitOf(l.unit || '') });
+      const unit = unitOf(l.unit || '');
+      const g = [{ name: nm(l), price: qMoney(info.price), unit, cut: false }];
       (l.cuts || []).forEach((c) => {
         const cut = qCut(c.cutId);
         if (!cut || !(Number(c.price) > 0)) return;
-        out.push({ type: 'item', name: `${nm(l)} ${nm(cut)}`, price: qMoney(Number(c.price)), unit: unitOf(l.unit || '') });
+        g.push({ name: nm(cut), price: qMoney(info.price + Number(c.price)), unit, cut: true });
       });
+      groups.push(g);
     });
-    if (out.length) rows.push({ type: 'sec', text: nm(s.cat) }, ...out);
+    if (groups.length) sections.push({ title: nm(s.cat), groups });
   });
-  return { rows, skipped };
+  return { sections, skipped };
 }
-const Q_PDF = { W: 1754, H: 1240, M: 60, rowH: 34, top: 210, bottom: 1240 - 100 };
+const Q_PDF = { W: 1754, H: 1240, M: 60, rowH: 34, titleH: 42, headH: 32, top: 196, bottom: 1240 - 100, blockGap: 26 };
 const Q_FONT = '-apple-system, "PingFang TC", "Heiti TC", "Noto Sans CJK TC", "Microsoft JhengHei", sans-serif';
-function qLayoutColumns(rows, lang) {
-  const perCol = Math.floor((Q_PDF.bottom - Q_PDF.top - Q_PDF.rowH) / Q_PDF.rowH);
-  const cont = lang === 'en' ? ' (cont.)' : ' (續)';
-  const cols = [];
-  let cur = [];
-  let sec = null;
-  rows.forEach((r) => {
-    if (r.type === 'sec') {
-      sec = r.text;
-      if (cur.length >= perCol - 1) { cols.push(cur); cur = []; }
-      cur.push(r);
-      return;
-    }
-    if (cur.length >= perCol) { cols.push(cur); cur = sec ? [{ type: 'sec', text: sec + cont }] : []; }
-    cur.push(r);
+// Split a section's groups into 3 side-by-side columns, top to bottom, never
+// splitting a line from its cuts.
+function qSplitCols(groups) {
+  const total = groups.reduce((n, g) => n + g.length, 0);
+  const target = Math.ceil(total / 3);
+  const cols = [[], [], []];
+  let ci = 0;
+  groups.forEach((g) => {
+    const len = cols[ci].reduce((n, x) => n + x.length, 0);
+    if (ci < 2 && len > 0 && len + g.length > target) ci++;
+    cols[ci].push(g);
   });
-  if (cur.length) cols.push(cur);
-  const pages = [];
-  for (let i = 0; i < cols.length; i += 3) pages.push(cols.slice(i, i + 3));
-  return pages.length ? pages : [[]];
+  return cols;
+}
+function qColRows(col) { return col.reduce((n, g) => n + g.length, 0); }
+// Lay sections out as tables down the page. A table that doesn't fit in the
+// space left starts on the next page; one too big for a whole page is split.
+function qLayoutBlocks(sections, lang) {
+  const { rowH, titleH, headH, top, bottom, blockGap } = Q_PDF;
+  const cont = lang === 'en' ? ' (cont.)' : ' (續)';
+  const pageRows = Math.floor((bottom - top - titleH - headH) / rowH);
+  const pages = [[]];
+  let y = top;
+  const place = (block) => {
+    const h = titleH + headH + block.rows * rowH;
+    if (y > top && y + h > bottom) { pages.push([]); y = top; }
+    pages[pages.length - 1].push({ ...block, y });
+    y += h + blockGap;
+  };
+  sections.forEach((s) => {
+    const cols = qSplitCols(s.groups);
+    const rows = Math.max(...cols.map(qColRows));
+    if (rows <= pageRows) { place({ title: s.title, cols, rows }); return; }
+    // Too tall for one page: cut into page-sized chunks (3 columns × pageRows).
+    let chunk = [], used = [0, 0, 0], ci = 0, first = true;
+    const flush = () => {
+      const c = chunk; chunk = []; used = [0, 0, 0]; ci = 0;
+      if (!c.some((x) => x.length)) return;
+      place({ title: first ? s.title : s.title + cont, cols: c, rows: Math.max(...c.map(qColRows)) });
+      first = false;
+    };
+    chunk = [[], [], []];
+    s.groups.forEach((g) => {
+      if (used[ci] + g.length > pageRows) { ci++; if (ci > 2) { flush(); chunk = [[], [], []]; } }
+      chunk[ci].push(g); used[ci] += g.length;
+    });
+    flush();
+  });
+  return pages;
 }
 function qFit(ctx, text, maxW) {
   if (ctx.measureText(text).width <= maxW) return text;
@@ -4160,57 +4207,68 @@ function qLoadImage(src) {
 }
 async function buildQuotePages(lang) {
   const en = lang === 'en';
-  const { rows, skipped } = qPdfRows(lang);
-  const pages = qLayoutColumns(rows, lang);
+  const { sections, skipped } = qPdfData(lang);
+  const pages = qLayoutBlocks(sections, lang);
   const co = state.company || {};
   const logo = await qLoadImage(co.logo);
   const d = new Date();
   const dateStr = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
-  const { W, H, M, rowH, top } = Q_PDF;
-  const gap = 40;
+  const { W, H, M, rowH, titleH, headH } = Q_PDF;
+  const gap = 28;
   const colW = (W - 2 * M - 2 * gap) / 3;
-  const out = pages.map((cols, pi) => {
+  const out = pages.map((blocks, pi) => {
     const c = document.createElement('canvas');
     c.width = W; c.height = H;
     const x = c.getContext('2d');
     x.fillStyle = '#fff'; x.fillRect(0, 0, W, H);
     x.fillStyle = '#111'; x.textBaseline = 'middle';
-    // header
+    // page header
     let hx = M;
     if (logo) {
       const h = 100, w = Math.min(320, logo.width * (h / logo.height));
       const hh = logo.height * (w / logo.width);
-      x.drawImage(logo, M, 50 + (h - hh) / 2, w, hh);
+      x.drawImage(logo, M, 44 + (h - hh) / 2, w, hh);
       hx = M + w + 24;
     }
     const coName = en ? (co.nameEn || co.nameZh || '') : (co.nameZh || co.nameEn || '');
-    if (coName) { x.font = `700 40px ${Q_FONT}`; x.textAlign = 'left'; x.fillText(qFit(x, coName, W - hx - 420), hx, 100); }
+    if (coName) { x.font = `700 40px ${Q_FONT}`; x.textAlign = 'left'; x.fillText(qFit(x, coName, W - hx - 420), hx, 94); }
     x.textAlign = 'right';
-    x.font = `700 44px ${Q_FONT}`; x.fillText(en ? 'Price List' : '報價單', W - M, 82);
-    x.font = `400 24px ${Q_FONT}`; x.fillStyle = '#444'; x.fillText(dateStr, W - M, 126);
-    x.fillStyle = '#111'; x.fillRect(M, 168, W - 2 * M, 3);
-    // columns
-    cols.forEach((col, ci) => {
-      const cx = M + ci * (colW + gap);
-      const priceR = cx + colW - 74, unitL = cx + colW - 64;
-      x.font = `600 20px ${Q_FONT}`; x.fillStyle = '#666';
-      x.textAlign = 'left'; x.fillText(en ? 'Item' : '貨品', cx + 6, top + rowH / 2);
-      x.textAlign = 'right'; x.fillText(en ? 'Price' : '單價', priceR, top + rowH / 2);
-      x.textAlign = 'left'; x.fillText(en ? 'Unit' : '單位', unitL, top + rowH / 2);
-      x.fillStyle = '#999'; x.fillRect(cx, top + rowH - 1, colW, 1.5);
-      col.forEach((r, ri) => {
-        const y = top + rowH * (ri + 1);
-        if (r.type === 'sec') {
-          x.fillStyle = '#333'; x.fillRect(cx, y + 3, colW, rowH - 4);
-          x.fillStyle = '#fff'; x.font = `700 21px ${Q_FONT}`; x.textAlign = 'left';
-          x.fillText(qFit(x, r.text, colW - 16), cx + 8, y + rowH / 2 + 1);
-          return;
-        }
-        x.fillStyle = '#111'; x.font = `400 22px ${Q_FONT}`; x.textAlign = 'left';
-        x.fillText(qFit(x, r.name, priceR - cx - 110), cx + 6, y + rowH / 2);
-        x.font = `600 22px ${Q_FONT}`; x.textAlign = 'right'; x.fillText('$' + r.price, priceR, y + rowH / 2);
-        x.font = `400 21px ${Q_FONT}`; x.textAlign = 'left'; x.fillStyle = '#333'; x.fillText(r.unit, unitL, y + rowH / 2);
-        x.fillStyle = '#ddd'; x.fillRect(cx, y + rowH - 1, colW, 1);
+    x.font = `700 44px ${Q_FONT}`; x.fillText(en ? 'Price List' : '報價單', W - M, 76);
+    x.font = `400 24px ${Q_FONT}`; x.fillStyle = '#444'; x.fillText(dateStr, W - M, 120);
+    x.fillStyle = '#111'; x.fillRect(M, 160, W - 2 * M, 3);
+    // category tables
+    blocks.forEach((b) => {
+      let y = b.y;
+      x.fillStyle = '#333'; x.fillRect(M, y, W - 2 * M, titleH);
+      x.fillStyle = '#fff'; x.font = `700 24px ${Q_FONT}`; x.textAlign = 'left';
+      x.fillText(qFit(x, b.title, W - 2 * M - 24), M + 12, y + titleH / 2 + 1);
+      y += titleH;
+      const usedCols = b.cols.filter((col) => col.length).length || 1;
+      b.cols.forEach((col, ci) => {
+        if (ci >= usedCols) return;
+        const cx = M + ci * (colW + gap);
+        const priceR = cx + colW - 78, unitL = cx + colW - 66;
+        x.fillStyle = '#F2F2F2'; x.fillRect(cx, y, colW, headH);
+        x.font = `600 19px ${Q_FONT}`; x.fillStyle = '#555';
+        x.textAlign = 'left'; x.fillText(en ? 'Item' : '貨品', cx + 8, y + headH / 2);
+        x.textAlign = 'right'; x.fillText(en ? 'Price' : '單價', priceR, y + headH / 2);
+        x.textAlign = 'left'; x.fillText(en ? 'Unit' : '單位', unitL, y + headH / 2);
+        let ry = y + headH;
+        col.forEach((g) => {
+          g.forEach((r) => {
+            const ind = r.cut ? 26 : 0;
+            x.fillStyle = r.cut ? '#444' : '#111';
+            x.font = `${r.cut ? 400 : 500} ${r.cut ? 20 : 22}px ${Q_FONT}`; x.textAlign = 'left';
+            x.fillText(qFit(x, (r.cut ? '└ ' : '') + r.name, priceR - cx - 100 - ind), cx + 8 + ind, ry + rowH / 2);
+            x.font = `600 ${r.cut ? 20 : 22}px ${Q_FONT}`; x.textAlign = 'right'; x.fillText('$' + r.price, priceR, ry + rowH / 2);
+            x.font = `400 20px ${Q_FONT}`; x.textAlign = 'left'; x.fillStyle = '#444'; x.fillText(r.unit, unitL, ry + rowH / 2);
+            ry += rowH;
+          });
+          x.fillStyle = '#CFCFCF'; x.fillRect(cx, ry - 1, colW, 1.2); // one box per line + its cuts
+        });
+        // table outline down to the block's full height, so the 3 columns line up
+        x.strokeStyle = '#999'; x.lineWidth = 1.5;
+        x.strokeRect(cx + 0.5, y + 0.5, colW - 1, headH + b.rows * rowH - 1);
       });
     });
     // footer
@@ -4222,7 +4280,8 @@ async function buildQuotePages(lang) {
     x.textAlign = 'right'; x.fillText(`${pi + 1} / ${pages.length}`, W - M, H - 50);
     return c.toDataURL('image/jpeg', 0.9);
   });
-  return { images: out, skipped, rowCount: rows.filter((r) => r.type === 'item').length };
+  const rowCount = sections.reduce((n, s) => n + s.groups.reduce((m, g) => m + g.length, 0), 0);
+  return { images: out, skipped, rowCount };
 }
 function qDataUrlBytes(url) {
   const b = atob(url.split(',')[1]);
