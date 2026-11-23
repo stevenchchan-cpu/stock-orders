@@ -3526,7 +3526,9 @@ function updateQuoteLines(next) { state.quoteLines = next; persist('quoteLines')
    much of it is still in the warehouse at the start of each rent month.
    Every unit still there pays +$0.50 for that month, as in batchCost():
    1 day over = month 1, one month and a day over = month 2, and so on.
-   At most 12 months per unit. Months already passed count for every unit.
+   Months already passed count for every unit (as on the Orders page).
+   Future rent months are only looked at up to 12 months from TODAY, so a
+   slow burn rate can't stretch the estimate indefinitely.
    Without a burn rate there's nothing to project from, so such a batch only
    gets the rent already due (same as the Orders page). */
 const QUOTE_RENT_MAX_MONTHS = 12;
@@ -3542,16 +3544,8 @@ function projectedAvgCost(item) {
   const landed = state.shipments.filter((s) => s.itemId === item.id && s.received && batchCost(s) && shipmentRemaining(s) > 0);
   if (!landed.length) return (qRentCache[item.id] = null);
   const burn = effectiveBurn(item);
-  let sim = null;
-  if (burn > 0) {
-    let days = 1;
-    landed.forEach((s) => {
-      if (!s.rentFreeDeadline) return;
-      const dd = daysFromToday(rentMonthMark(s.rentFreeDeadline, QUOTE_RENT_MAX_MONTHS - 1)) + 1;
-      if (dd > days) days = dd;
-    });
-    sim = simulateItemRunway(item, state.shipments, Math.min(days, 800));
-  }
+  const limitDay = daysFromToday(rentMonthMark(todayStr(), QUOTE_RENT_MAX_MONTHS)); // 12 months from today
+  const sim = burn > 0 ? simulateItemRunway(item, state.shipments, limitDay) : null;
   let qty = 0, total = 0, rentTotal = 0;
   landed.forEach((s) => {
     const base = Number(s.askingPrice);
@@ -3559,8 +3553,9 @@ function projectedAvgCost(item) {
     let rent = 0; // total rent $ for this batch's q units
     if (s.rentFreeDeadline) {
       const b = sim ? sim.batches.find((x) => x.id === s.id) : null;
-      for (let k = 1; k <= QUOTE_RENT_MAX_MONTHS; k++) {
+      for (let k = 1; k <= 600; k++) {
         const day = daysFromToday(rentMonthMark(s.rentFreeDeadline, k - 1)) + 1; // first day of rent month k
+        if (day > limitDay) break;                     // beyond 12 months from today
         let units;
         if (day <= 0) units = q;                       // already being charged
         else if (!b) units = 0;                        // no burn rate: can't project
@@ -3841,7 +3836,7 @@ function renderQuoteCalc(d) {
       <span class="text-sm">Sale price <span class="text-xs muted" style="font-weight:400;">(up to 10¢)</span></span>
       <span class="q-mono" style="color:var(--forest);">$${qMoney(pr.price)}${d.unit ? `<span class="text-xs muted" style="font-family:Inter,sans-serif;font-weight:500;">/${escapeHtml(d.unit)}</span>` : ''}</span>
     </div>
-    ${state.quoteRent && raw.info && raw.info.rent > 0.005 ? `<div class="text-xs" style="color:var(--amber-strong);margin-top:2px;">Cost includes expected rent ${qMoney(raw.info.rent)}/unit (landed stock, up to ${QUOTE_RENT_MAX_MONTHS} months)${raw.info.noBurn ? '. No burn rate set, so only rent already due is counted' : ''}</div>` : ''}
+    ${state.quoteRent && raw.info && raw.info.rent > 0.005 ? `<div class="text-xs" style="color:var(--amber-strong);margin-top:2px;">Cost includes expected rent ${qMoney(raw.info.rent)}/unit (landed stock, looking ${QUOTE_RENT_MAX_MONTHS} months ahead)${raw.info.noBurn ? '. No burn rate set, so only rent already due is counted' : ''}</div>` : ''}
     ${state.quoteRent && raw.info && raw.info.noBurn && !(raw.info.rent > 0.005) ? `<div class="text-xs faint" style="margin-top:2px;">+Rent is on, but this item has no burn rate, so expected rent can't be worked out.</div>` : ''}
     ${raw.item && d.itemIds.length > 1 ? `<div class="text-xs faint" style="margin-top:2px;">Priced from ${escapeHtml(raw.item.name)} (highest cost)</div>` : ''}`;
 }
