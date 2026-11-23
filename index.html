@@ -152,6 +152,8 @@
   .q-selall { display:flex; align-items:center; gap:8px; background:#fff; border:1px solid var(--border); border-radius:999px; padding:6px 12px 6px 8px; font-size:13px; font-weight:600; color:var(--forest); }
   .q-genbtn { display:flex; align-items:center; gap:6px; background:var(--cream); color:var(--forest); border-radius:999px; padding:7px 13px; font-size:13px; font-weight:700; white-space:nowrap; font-variant-numeric:tabular-nums; }
   .q-genbtn:disabled { opacity:.5; }
+  .q-rentbtn { border-radius:999px; padding:7px 11px; font-size:13px; font-weight:700; white-space:nowrap; background:transparent; color:var(--cream); border:1.5px solid rgba(255,255,255,.55); }
+  .q-rentbtn.on { background:var(--amber-strong); color:#fff; border-color:var(--amber-strong); }
   .q-sheet .field { margin-bottom:8px; }
   .q-sheet .field label { font-size:11px; margin-bottom:2px; }
   .q-sheet input[type=text], .q-sheet input[type=number], .q-sheet select { padding:8px 10px; background:#fff; }
@@ -3703,7 +3705,6 @@ function renderQuoteToolbar() {
     ${chip(f === 'unclassed', 'Unclassed', 'data-q-filter="unclassed"')}
     ${chip(f === 'up', '↑', 'data-q-filter="up"')}
     ${chip(f === 'down', '↓', 'data-q-filter="down"')}
-    ${chip(!!state.quoteRent, '+Rent', 'data-q-rent')}
     <select id="quoteCatFilter" class="btn-sm chip-btn" style="width:auto;border:none;padding:6px 10px;background:${catOn ? 'var(--ink)' : 'rgba(255,255,255,.9)'};color:${catOn ? '#fff' : 'var(--forest)'};font-weight:${catOn ? 600 : 500};">
       <option value="">Class ▾</option>${catOpts}<option value="_none" ${state.quoteCatFilter === '_none' ? 'selected' : ''}>未分類</option>
     </select>
@@ -3712,7 +3713,8 @@ function renderQuoteToolbar() {
 function renderQuoteCount() {
   const total = state.quoteLines.length;
   const sel = state.quoteLines.filter((l) => l.selected).length;
-  return `<button data-q-generate class="q-genbtn" ${sel === 0 ? 'disabled' : ''}>${icon('fileText', 14, 'var(--forest)')}Quote ${sel} / ${total}</button>`;
+  const rentOn = !!state.quoteRent;
+  return `<div class="row" style="gap:6px;align-items:center;"><button data-q-rent class="q-rentbtn ${rentOn ? 'on' : ''}" aria-pressed="${rentOn}">+Rent</button><button data-q-generate class="q-genbtn" ${sel === 0 ? 'disabled' : ''}>${icon('fileText', 14, 'var(--forest)')}Quote ${sel} / ${total}</button></div>`;
 }
 function renderQuoteCard(l) {
   const info = qLineInfo(l);
@@ -3723,7 +3725,9 @@ function renderQuoteCard(l) {
   const link = (l.itemIds || []).length > 1 ? `<span class="q-link">🔗${l.itemIds.length}</span>` : '';
   const cost = info.cur != null ? `<span class="q-mono">$${qMoney(info.cur)}</span>` : '<span class="faint">No cost</span>';
   const ri = state.quoteRent && info.raw && info.raw.info ? info.raw.info : null;
-  const rent = ri && ri.rent > 0.005 ? `<span class="q-rent">incl. rent ${qMoney(ri.rent * qFactor(l.factor))}${ri.noBurn ? '*' : ''}</span>` : '';
+  // Only the FUTURE rent: rent already due is in the Orders page cost already.
+  const rent = !ri ? '' : ri.extra > 0.005 ? `<span class="q-rent">+future rent ${qMoney(ri.extra * qFactor(l.factor))}</span>`
+    : ri.noBurn ? '<span class="faint">no burn rate</span>' : '';
   // Cut price is an add-on; show the total the client will see.
   const cuts = info.price == null ? '' : (l.cuts || []).filter((c) => qCut(c.cutId) && Number(c.price) > 0)
     .map((c) => `${escapeHtml(qCut(c.cutId).name)} <b class="q-mono">${qMoney(info.price + Number(c.price))}</b>`).join(' · ');
@@ -3836,8 +3840,8 @@ function renderQuoteCalc(d) {
       <span class="text-sm">Sale price <span class="text-xs muted" style="font-weight:400;">(up to 10¢)</span></span>
       <span class="q-mono" style="color:var(--forest);">$${qMoney(pr.price)}${d.unit ? `<span class="text-xs muted" style="font-family:Inter,sans-serif;font-weight:500;">/${escapeHtml(d.unit)}</span>` : ''}</span>
     </div>
-    ${state.quoteRent && raw.info && raw.info.rent > 0.005 ? `<div class="text-xs" style="color:var(--amber-strong);margin-top:2px;">Cost includes expected rent ${qMoney(raw.info.rent)}/unit (landed stock, looking ${QUOTE_RENT_MAX_MONTHS} months ahead)${raw.info.noBurn ? '. No burn rate set, so only rent already due is counted' : ''}</div>` : ''}
-    ${state.quoteRent && raw.info && raw.info.noBurn && !(raw.info.rent > 0.005) ? `<div class="text-xs faint" style="margin-top:2px;">+Rent is on, but this item has no burn rate, so expected rent can't be worked out.</div>` : ''}
+    ${state.quoteRent && raw.info && raw.info.extra > 0.005 ? `<div class="text-xs" style="color:var(--amber-strong);margin-top:2px;">Includes future rent ${qMoney(raw.info.extra)}/unit (landed stock, next ${QUOTE_RENT_MAX_MONTHS} months)</div>` : ''}
+    ${state.quoteRent && raw.info && raw.info.noBurn ? `<div class="text-xs faint" style="margin-top:2px;">+Rent is on, but this item has no burn rate, so future rent can't be worked out.</div>` : ''}
     ${raw.item && d.itemIds.length > 1 ? `<div class="text-xs faint" style="margin-top:2px;">Priced from ${escapeHtml(raw.item.name)} (highest cost)</div>` : ''}`;
 }
 function renderQuoteLineEditor(p) {
