@@ -144,6 +144,7 @@
   .q-mg { background:var(--green); color:var(--forest); border-radius:999px; padding:0 6px; font-weight:600; }
   .q-mg.neg { background:var(--red-bg); color:var(--red-text); }
   .q-link { color:var(--forest); font-weight:600; }
+  .q-rent { color:var(--amber-strong); font-weight:600; }
   .q-warn { background:var(--amber-bg); color:var(--amber-text); border-radius:999px; padding:0 6px; font-weight:600; }
   .q-cuts { font-size:12px; color:var(--ink); margin-top:2px; }
   .q-cuts b { color:var(--forest); }
@@ -420,6 +421,7 @@ const state = {
   company: loadJSON('company', {}),       // company details for the price list — phone only, never in code
   quoteSetupHidden: loadJSON('quoteSetupHidden', false),
   quoteLang: loadJSON('quoteLang', 'zh'),
+  quoteRent: loadJSON('quoteRent', false), // Quote tab: add expected storage rent to the average cost
   quoteSearch: '',
   quoteFilter: 'all',        // all | unselected | unclassed | up | down
   quoteCatFilter: '',        // '' | category id | '_none'
@@ -3518,9 +3520,77 @@ function ensureQuoteDefaults() {
 function updateQuoteLines(next) { state.quoteLines = next; persist('quoteLines'); }
 
 /* ---------- maths ---------- */
-function qItemCost(item) {
+/* Expected rent (Quote tab only, when the "+Rent" chip is on).
+   For each LANDED batch with a price, the runway simulation (burn rate,
+   pending pickups, earliest rent-free deadline drawn first) estimates how
+   much of it is still in the warehouse at the start of each rent month.
+   Every unit still there pays +$0.50 for that month, as in batchCost():
+   1 day over = month 1, one month and a day over = month 2, and so on.
+   At most 12 months per unit. Months already passed count for every unit.
+   Without a burn rate there's nothing to project from, so such a batch only
+   gets the rent already due (same as the Orders page). */
+const QUOTE_RENT_MAX_MONTHS = 12;
+function rentMonthMark(deadline, k) {
+  const [y, m, d] = deadline.split('-').map(Number);
+  const last = new Date(y, m - 1 + k + 1, 0).getDate();
+  return toLocalDateStr(new Date(y, m - 1 + k, Math.min(d, last)));
+}
+let qRentCache = {};
+function projectedAvgCost(item) {
+  if (!item) return null;
+  if (qRentCache[item.id] !== undefined) return qRentCache[item.id];
+  const landed = state.shipments.filter((s) => s.itemId === item.id && s.received && batchCost(s) && shipmentRemaining(s) > 0);
+  if (!landed.length) return (qRentCache[item.id] = null);
+  const burn = effectiveBurn(item);
+  let sim = null;
+  if (burn > 0) {
+    let days = 1;
+    landed.forEach((s) => {
+      if (!s.rentFreeDeadline) return;
+      const dd = daysFromToday(rentMonthMark(s.rentFreeDeadline, QUOTE_RENT_MAX_MONTHS - 1)) + 1;
+      if (dd > days) days = dd;
+    });
+    sim = simulateItemRunway(item, state.shipments, Math.min(days, 800));
+  }
+  let qty = 0, total = 0, rentTotal = 0;
+  landed.forEach((s) => {
+    const base = Number(s.askingPrice);
+    const q = shipmentRemaining(s);
+    let rent = 0; // total rent $ for this batch's q units
+    if (s.rentFreeDeadline) {
+      const b = sim ? sim.batches.find((x) => x.id === s.id) : null;
+      for (let k = 1; k <= QUOTE_RENT_MAX_MONTHS; k++) {
+        const day = daysFromToday(rentMonthMark(s.rentFreeDeadline, k - 1)) + 1; // first day of rent month k
+        let units;
+        if (day <= 0) units = q;                       // already being charged
+        else if (!b) units = 0;                        // no burn rate: can't project
+        else units = Math.min(q, b.perDay[Math.min(day, b.perDay.length - 1)] || 0);
+        if (units <= 0 && day > 0) break;
+        rent += units * RENT_PER_MONTH;
+      }
+    }
+    qty += q; total += q * base + rent; rentTotal += rent;
+  });
+  return (qRentCache[item.id] = qty > 0 ? { avg: total / qty, rent: rentTotal / qty, qty, noBurn: !(burn > 0) } : null);
+}
+// Cost per stock unit for the Quote tab: the Orders page cost, or (with
+// "+Rent" on and an average-based cost) the average including expected rent.
+function qItemCostInfo(item) {
   const c = item ? displayCost(item) : null;
-  return c && Number(c.price) > 0 ? Number(c.price) : null;
+  if (!c || !(Number(c.price) > 0)) return null;
+  if (state.quoteRent && c.kind === 'avg') {
+    const p = projectedAvgCost(item);
+    if (p) {
+      const nowAvg = weightedAvgCost(item);
+      const already = nowAvg ? nowAvg.avg - (p.avg - p.rent) : 0; // rent already in the Orders page figure
+      return { cost: p.avg, rent: p.rent, extra: p.avg - Number(c.price), already, noBurn: p.noBurn };
+    }
+  }
+  return { cost: Number(c.price), rent: 0, extra: 0, already: 0, noBurn: false };
+}
+function qItemCost(item) {
+  const c = qItemCostInfo(item);
+  return c ? c.cost : null;
 }
 // Highest cost among the line's stock items (per stock unit), or the manual cost.
 function qRawCost(itemIds, manualCost) {
@@ -3531,7 +3601,7 @@ function qRawCost(itemIds, manualCost) {
     if (c != null && (best == null || c > best)) { best = c; bestItem = it; }
   });
   if (best == null && Number(manualCost) > 0) return { cost: Number(manualCost), item: null };
-  return best == null ? null : { cost: best, item: bestItem };
+  return best == null ? null : { cost: best, item: bestItem, info: qItemCostInfo(bestItem) };
 }
 function qFactor(f) { const n = Number(f); return n > 0 ? n : 1; }
 function qRoundUp10(x) { return Math.ceil(Math.round(x * 1000) / 100 - 1e-9) / 10; }
@@ -3638,6 +3708,7 @@ function renderQuoteToolbar() {
     ${chip(f === 'unclassed', 'Unclassed', 'data-q-filter="unclassed"')}
     ${chip(f === 'up', '↑', 'data-q-filter="up"')}
     ${chip(f === 'down', '↓', 'data-q-filter="down"')}
+    ${chip(!!state.quoteRent, '+Rent', 'data-q-rent')}
     <select id="quoteCatFilter" class="btn-sm chip-btn" style="width:auto;border:none;padding:6px 10px;background:${catOn ? 'var(--ink)' : 'rgba(255,255,255,.9)'};color:${catOn ? '#fff' : 'var(--forest)'};font-weight:${catOn ? 600 : 500};">
       <option value="">Class ▾</option>${catOpts}<option value="_none" ${state.quoteCatFilter === '_none' ? 'selected' : ''}>未分類</option>
     </select>
@@ -3656,6 +3727,8 @@ function renderQuoteCard(l) {
   const mg = info.margin != null ? `<span class="q-mg ${info.margin < 0 ? 'neg' : ''}">${info.margin.toFixed(1)}%</span>` : '';
   const link = (l.itemIds || []).length > 1 ? `<span class="q-link">🔗${l.itemIds.length}</span>` : '';
   const cost = info.cur != null ? `<span class="q-mono">$${qMoney(info.cur)}</span>` : '<span class="faint">No cost</span>';
+  const ri = state.quoteRent && info.raw && info.raw.info ? info.raw.info : null;
+  const rent = ri && ri.rent > 0.005 ? `<span class="q-rent">incl. rent ${qMoney(ri.rent * qFactor(l.factor))}${ri.noBurn ? '*' : ''}</span>` : '';
   // Cut price is an add-on; show the total the client will see.
   const cuts = info.price == null ? '' : (l.cuts || []).filter((c) => qCut(c.cutId) && Number(c.price) > 0)
     .map((c) => `${escapeHtml(qCut(c.cutId).name)} <b class="q-mono">${qMoney(info.price + Number(c.price))}</b>`).join(' · ');
@@ -3668,7 +3741,7 @@ function renderQuoteCard(l) {
             <span class="q-name truncate">${escapeHtml(l.name || '(no name)')}</span>
             <span class="q-price">${info.price != null ? '$' + qMoney(info.price) : '—'}<small>${l.unit ? '/' + escapeHtml(l.unit) : ''}</small></span>
           </div>
-          <div class="q-sub">${cost}${arrow}${mg}${link}${needs ? '<span class="q-warn">Class + unit</span>' : ''}</div>
+          <div class="q-sub">${cost}${rent}${arrow}${mg}${link}${needs ? '<span class="q-warn">Class + unit</span>' : ''}</div>
           ${cuts ? `<div class="q-cuts"><span class="faint">↳</span> ${cuts}</div>` : ''}
         </button>
       </div>
@@ -3676,6 +3749,7 @@ function renderQuoteCard(l) {
 }
 function renderQuoteTab() {
   if (state.items.length === 0) return renderEmptyState('No stock items yet', 'Add stock items first. Each one appears here as a price-list line.');
+  qRentCache = {};
   syncQuoteLines();
   const visible = qVisibleLines();
   const cats = state.quoteCats || [];
@@ -3767,6 +3841,8 @@ function renderQuoteCalc(d) {
       <span class="text-sm">Sale price <span class="text-xs muted" style="font-weight:400;">(up to 10¢)</span></span>
       <span class="q-mono" style="color:var(--forest);">$${qMoney(pr.price)}${d.unit ? `<span class="text-xs muted" style="font-family:Inter,sans-serif;font-weight:500;">/${escapeHtml(d.unit)}</span>` : ''}</span>
     </div>
+    ${state.quoteRent && raw.info && raw.info.rent > 0.005 ? `<div class="text-xs" style="color:var(--amber-strong);margin-top:2px;">Cost includes expected rent ${qMoney(raw.info.rent)}/unit (landed stock, up to ${QUOTE_RENT_MAX_MONTHS} months)${raw.info.noBurn ? '. No burn rate set, so only rent already due is counted' : ''}</div>` : ''}
+    ${state.quoteRent && raw.info && raw.info.noBurn && !(raw.info.rent > 0.005) ? `<div class="text-xs faint" style="margin-top:2px;">+Rent is on, but this item has no burn rate, so expected rent can't be worked out.</div>` : ''}
     ${raw.item && d.itemIds.length > 1 ? `<div class="text-xs faint" style="margin-top:2px;">Priced from ${escapeHtml(raw.item.name)} (highest cost)</div>` : ''}`;
 }
 function renderQuoteLineEditor(p) {
@@ -3967,6 +4043,7 @@ function onPopupChange(e) {
 /* ---------- Quote tab events (main + toolbar) ---------- */
 function handleQuoteMainClick(btn) {
   if (btn.dataset.qFilter) { state.quoteFilter = btn.dataset.qFilter; renderTab(); return true; }
+  if (btn.hasAttribute('data-q-rent')) { state.quoteRent = !state.quoteRent; persist('quoteRent'); qRentCache = {}; renderTab(); return true; }
   if (btn.dataset.qTick) {
     updateQuoteLines(state.quoteLines.map((l) => (l.id === btn.dataset.qTick ? { ...l, selected: !l.selected } : l)));
     rerenderQuoteList();
