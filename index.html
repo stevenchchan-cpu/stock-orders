@@ -1980,6 +1980,16 @@ function filterRunwayRows() {
    and sentences handle any horizon and answer the only two questions that
    matter: when do I run dry (and must I spot-buy), and will this batch outstay
    its rent-free window. ---- */
+/* Shipment list order on an item's detail page: Landed first, then In transit.
+   Within each group, earliest arrival first — landed by the day it landed
+   (ETA if that wasn't recorded), in transit by ETA. No date goes last. */
+function shipmentListOrder(a, b) {
+  const sa = a.shipment, sb = b.shipment;
+  if (!!sa.received !== !!sb.received) return sa.received ? -1 : 1;
+  const dateOf = (s) => (s.received ? (s.receivedDate || s.etaDate) : s.etaDate) || '9999-99-99';
+  return dateOf(sa).localeCompare(dateOf(sb));
+}
+
 function renderRunwayDetailModal(m) {
   const item = state.items.find((i) => i.id === m.itemId);
   if (!item) return modalShell('Item not found', '<p class="text-sm muted">This item may have been deleted.</p>');
@@ -2039,9 +2049,15 @@ function renderRunwayDetailModal(m) {
   const alerts = (gapAlerts + rentAlerts) || `<p class="text-sm muted">No gaps in the next ${ALERT_WINDOW_DAYS} days, no rent risk. The bar above shows all 5 months.</p>`;
 
   /* --- The timeline: each batch as a dated entry --- */
-  const timeline = lifecycle
-    .filter((b) => b.shipment)
-    .sort((a, b) => a.arriveDay - b.arriveDay)
+  // Shipments arriving after the 5-month view aren't in the simulation (or the
+  // bar), but they must still be listed here so they don't seem to vanish.
+  const simIds = new Set(lifecycle.filter((b) => b.shipment).map((b) => b.shipment.id));
+  const farOut = state.shipments
+    .filter((s) => s.itemId === item.id && shipmentRemaining(s) > 0 && !simIds.has(s.id))
+    .map((s) => ({ shipment: s, farOut: true, overdue: false, emptyDay: null }));
+
+  const timeline = [...lifecycle.filter((b) => b.shipment), ...farOut]
+    .sort(shipmentListOrder)
     .map((b) => {
       const s = b.shipment;
       const supplier = state.suppliers.find((sup) => sup.id === s.supplierId);
@@ -2073,7 +2089,9 @@ function renderRunwayDetailModal(m) {
           <button data-toggle-received="${s.id}" class="btn-sm shrink0" style="background:${landed ? 'var(--green)' : 'var(--tint)'};color:${landed ? 'var(--forest)' : '#3B7EA1'};">${landed ? 'Landed' : 'In transit'}</button>
         </div>
         <div class="text-xs" style="margin-top:8px;line-height:1.7;color:var(--muted);">
-          ${landed
+          ${b.farOut
+            ? `Arrives <strong style="color:var(--ink);">${s.etaDate ? formatDateLabel(s.etaDate) + ' ' + s.etaDate.slice(0, 4) : 'date not set'}</strong> · <span class="faint">beyond the 5-month view, not on the bar yet</span>`
+            : landed
             ? `In the warehouse now · lasts until <strong style="color:var(--ink);">${lastsUntil}</strong>`
             : b.overdue
               ? `<span style="color:var(--amber-strong);font-weight:600;">Not marked landed yet</span> — ETA was ${s.etaDate ? formatDateLabel(s.etaDate) : 'not set'}. Tap “In transit” once it's in the warehouse · lasts until <strong style="color:var(--ink);">${lastsUntil}</strong>`
@@ -2695,6 +2713,10 @@ function renderSuppliersTab() {
    MODAL SYSTEM
    ============================================================ */
 function openModal(modal) {
+  // Opening a page on top of another (e.g. a shipment from an item's detail
+  // view): note how far down the current page was, so coming back lands there.
+  const page = document.getElementById('modalPage');
+  if (page && modal.returnTo && modal.returnTo.scrollTop == null) modal.returnTo.scrollTop = page.scrollTop;
   state.modal = modal;
   renderModal();
 }
@@ -2709,6 +2731,11 @@ function renderModal() {
   const root = document.getElementById('modalRoot');
   if (!state.modal) { root.innerHTML = ''; return; }
   const m = state.modal;
+  // Re-drawing the same page (e.g. tapping Landed / In transit) keeps its scroll spot.
+  const oldPage = document.getElementById('modalPage');
+  const keepY = oldPage && root.dataset.modalRef === String(m._ref) ? oldPage.scrollTop : null;
+  if (m._ref == null) m._ref = ++modalRefCounter;
+  root.dataset.modalRef = String(m._ref);
   if (m.type === 'item') root.innerHTML = renderItemForm(m);
   else if (m.type === 'supplier') root.innerHTML = renderSupplierForm(m);
   else if (m.type === 'warehouse') root.innerHTML = renderWarehouseForm(m);
@@ -2717,7 +2744,11 @@ function renderModal() {
   else if (m.type === 'runwayDetail') root.innerHTML = renderRunwayDetailModal(m);
   else if (m.type === 'quotePreview') { root.innerHTML = renderQuotePreviewModal(); if (!m.started) { m.started = true; fillQuotePreview(); } }
   wireModalEvents();
+  const y = keepY != null ? keepY : m.scrollTop;
+  const newPage = document.getElementById('modalPage');
+  if (newPage && y) newPage.scrollTop = y;
 }
+let modalRefCounter = 0;
 
 function modalShell(title, bodyHtml) {
   return `
