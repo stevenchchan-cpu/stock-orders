@@ -1474,10 +1474,16 @@ function renderCartLineRow(l, supplierIdForCard) {
 function cartBatchTag(l) {
   if (l.shipmentId) {
     const sh = state.shipments.find((s) => s.id === l.shipmentId);
-    if (!sh) return `<span class="batch-tag" style="background:var(--amber-bg);color:var(--amber-text);">batch gone · spot</span>`;
-    return `<span class="batch-tag truncate" style="background:var(--green);color:var(--forest);min-width:0;">${escapeHtml(sh.header || 'Shipment')}${sh.rentFreeDeadline ? ' · ' + shortDate(sh.rentFreeDeadline) : ''}</span>`;
+    if (!sh) return `<button data-change-batch="${l.id}" class="batch-tag" style="background:var(--amber-bg);color:var(--amber-text);">batch gone · spot ▾</button>`;
+    return `<button data-change-batch="${l.id}" class="batch-tag truncate" title="Change batch" style="background:var(--green);color:var(--forest);min-width:0;">${escapeHtml(sh.header || 'Shipment')}${sh.rentFreeDeadline ? ' · ' + shortDate(sh.rentFreeDeadline) : ''} ▾</button>`;
   }
-  if (l.spot) return `<span class="batch-tag shrink0" style="background:var(--amber-bg);color:var(--amber-text);">Spot</span>`;
+  if (l.spot) {
+    const item = state.items.find((i) => i.id === l.itemId);
+    const canPick = pickableBatches(item, l.id).length > 0;
+    return canPick
+      ? `<button data-change-batch="${l.id}" class="batch-tag shrink0" title="Take from a batch instead" style="background:var(--amber-bg);color:var(--amber-text);">Spot ▾</button>`
+      : `<span class="batch-tag shrink0" style="background:var(--amber-bg);color:var(--amber-text);">Spot</span>`;
+  }
   return '';
 }
 
@@ -2464,14 +2470,14 @@ function openShipmentPicker(entries, ready) {
 const r3 = (n) => Math.round(n * 1000) / 1000;
 function pickEntryStatus(e) {
   const item = state.items.find((i) => i.id === e.itemId);
-  const batches = pickableBatches(item);
+  const batches = pickableBatches(item, e.replaceLineId);
   let total = Number(e.spot) || 0;
   const over = [];
   Object.entries(e.alloc).forEach(([sid, q]) => {
     q = Number(q) || 0;
     total += q;
     const b = batches.find((x) => x.id === sid);
-    const free = b ? batchFree(b) : 0;
+    const free = b ? batchFree(b, e.replaceLineId) : 0;
     if (q > free) over.push({ b, free });
   });
   total = r3(total);
@@ -2485,7 +2491,7 @@ function renderShipmentPicker(m) {
     }).join(', ')}</div>` : '';
   const blocks = m.entries.map((e, ei) => {
     const item = state.items.find((i) => i.id === e.itemId);
-    const batches = pickableBatches(item);
+    const batches = pickableBatches(item, e.replaceLineId);
     const rows = batches.map((b, bi) => {
       const q = e.alloc[b.id] || '';
       const left = daysFromToday(b.rentFreeDeadline || '9999-12-31');
@@ -2494,7 +2500,7 @@ function renderShipmentPicker(m) {
         <div class="flex1" style="min-width:0;">
           <div class="text-sm truncate" style="font-weight:600;">${escapeHtml(b.header || 'Shipment')}${bi === 0 ? ' <span class="pick-pill">oldest</span>' : ''}</div>
           <div class="text-xs muted truncate">${escapeHtml((state.suppliers.find((s) => s.id === b.supplierId) || {}).name || 'No supplier')} · ${escapeHtml((state.warehouses.find((w) => w.id === shipmentWarehouseId(b)) || {}).name || 'no warehouse')}</div>
-          <div class="text-xs"><span style="color:var(--forest);font-weight:600;">${batchFree(b)} left</span>${b.rentFreeDeadline ? ` <span class="faint">|</span> <span style="font-size:10px;font-weight:500;color:${rfColor};">${shortDate(b.rentFreeDeadline)}</span>` : ''}</div>
+          <div class="text-xs"><span style="color:var(--forest);font-weight:600;">${batchFree(b, e.replaceLineId)} left</span>${b.rentFreeDeadline ? ` <span class="faint">|</span> <span style="font-size:10px;font-weight:500;color:${rfColor};">${shortDate(b.rentFreeDeadline)}</span>` : ''}</div>
         </div>
         <input type="number" inputmode="decimal" class="qty-input pick-q" placeholder="0" value="${q}" data-pick="${ei}|${b.id}">
       </div>`;
@@ -2518,7 +2524,7 @@ function renderShipmentPicker(m) {
   }).join('');
   const body = `
     ${readyNote}
-    <p class="text-xs faint mb2">${m.entries.length > 1 ? `These ${m.entries.length} items have more than one batch, or not enough left.` : 'Choose which batch to take it from.'} Filled oldest first — just tap Add if that's fine.</p>
+    <p class="text-xs faint mb2">${m.replaceLineId ? 'Move this cart line to another batch, split it, or make it spot.' : `${m.entries.length > 1 ? `These ${m.entries.length} items have more than one batch, or not enough left.` : 'Choose which batch to take it from.'} Filled oldest first — just tap Add if that's fine.`}</p>
     <div style="display:flex;flex-direction:column;gap:10px;">${blocks}</div>
     <div style="height:80px;"></div>`;
   const footer = `<div class="pick-footer row gap2">
@@ -2526,7 +2532,7 @@ function renderShipmentPicker(m) {
       <button data-close-modal class="btn" style="background:var(--tint);color:var(--muted);width:auto;padding:10px 16px;">Cancel</button>
       <button data-pick-confirm class="btn btn-primary" style="width:auto;padding:10px 16px;">Add to cart</button>
     </div>`;
-  return modalShell(m.entries.length > 1 || m.ready.length ? 'Choose shipments' : 'Choose shipment', body).replace(/<\/div>\s*$/, `${footer}</div>`);
+  return modalShell(m.replaceLineId ? 'Change batch' : m.entries.length > 1 || m.ready.length ? 'Choose shipments' : 'Choose shipment', body).replace(/<\/div>\s*$/, `${footer}</div>`);
 }
 // Refresh statuses / fix-it boxes / button in place (no re-render, keeps keyboard).
 function updatePickerState() {
@@ -2570,7 +2576,7 @@ function updatePickerState() {
   const itemCount = new Set([...m.ready.map((l) => l.itemId), ...m.entries.map((e) => e.itemId)]).size;
   if (btn) {
     btn.disabled = pending > 0;
-    btn.textContent = itemCount > 1 ? `Add ${itemCount} to cart` : 'Add to cart';
+    btn.textContent = m.replaceLineId ? 'Save' : itemCount > 1 ? `Add ${itemCount} to cart` : 'Add to cart';
   }
   const fs = document.getElementById('pickFooterStatus');
   if (fs) {
@@ -2586,15 +2592,46 @@ function confirmShipmentPicker() {
   m.entries.forEach((e) => {
     const item = state.items.find((i) => i.id === e.itemId);
     if (!item) return;
-    pickableBatches(item).forEach((b) => {
+    pickableBatches(item, e.replaceLineId).forEach((b) => {
       const q = Number(e.alloc[b.id]) || 0;
       if (q > 0) lines.push(newCartLine(item, q, b.id));
     });
     if (Number(e.spot) > 0) lines.push(newCartLine(item, Number(e.spot)));
   });
+  if (m.replaceLineId) {
+    // Changing a cart line's batch: swap it in place for the new line(s),
+    // keeping its price and (W) setting. Unchanged choice -> leave it alone.
+    const old = state.cart.find((c) => c.id === m.replaceLineId);
+    const e = m.entries[0];
+    const sameChoice = old && (old.shipmentId
+      ? (Object.keys(e.alloc).length === 1 && Number(e.alloc[old.shipmentId]) === old.qty && !(Number(e.spot) > 0))
+      : (Object.keys(e.alloc).length === 0 && Number(e.spot) === old.qty));
+    if (old && !sameChoice) {
+      const keep = lines.map((l) => ({
+        ...l,
+        ...(old.toOwnWarehouse ? { toOwnWarehouse: true } : {}),
+        ...(Number(old.price) > 0 ? { price: Number(old.price) } : {}),
+      }));
+      const idx = state.cart.findIndex((c) => c.id === old.id);
+      updateCart([...state.cart.slice(0, idx), ...keep, ...state.cart.slice(idx + 1)]);
+    }
+    closeModal();
+    return;
+  }
   updateCart([...state.cart, ...lines]);
   [...m.ready, ...m.entries].forEach((x) => { state.draftQty[x.itemId] = ''; });
   closeModal();
+}
+// Tap a cart line's batch / Spot tag -> reopen the picker for just that line.
+function openChangeBatch(lineId) {
+  const line = state.cart.find((c) => c.id === lineId);
+  if (!line) return;
+  const entry = {
+    itemId: line.itemId, want: line.qty, replaceLineId: line.id,
+    alloc: line.shipmentId && state.shipments.some((s) => s.id === line.shipmentId) ? { [line.shipmentId]: line.qty } : {},
+    spot: line.shipmentId && state.shipments.some((s) => s.id === line.shipmentId) ? 0 : line.qty,
+  };
+  openModal({ type: 'pickShipment', entries: [entry], ready: [], replaceLineId: line.id });
 }
 
 /* Omega: no landed stock from ANY supplier, but something is on the way
@@ -3537,6 +3574,7 @@ function onMainClick(e) {
     if (group) sendSupplierOrder(group, state.dateOverrides[btn.dataset.sendSupplier] || state.orderDate);
     return;
   }
+  if (btn.dataset.changeBatch) { openChangeBatch(btn.dataset.changeBatch); return; }
   if (btn.dataset.qtyStep) {
     const [lineId, delta] = btn.dataset.qtyStep.split(':');
     const line = state.cart.find((c) => c.id === lineId);
