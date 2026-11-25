@@ -2363,9 +2363,9 @@ function shipmentRemaining(s) {
    - Batches from ANY supplier are offered, oldest first = earliest rent-free
      deadline (the one that starts costing rent soonest).
    - The Orders tab row shows the oldest batch's supplier · warehouse · free qty.
-   - Adding: no landed batch -> spot line. Oldest batch covers the whole qty ->
-     linked to it straight away. Otherwise the "Choose shipment" page opens,
-     pre-filled oldest first, with a Spot box.
+   - Adding: no landed batch -> spot line. Only ONE batch and it covers the
+     qty -> linked to it straight away. Otherwise (2+ batches, or not enough)
+     the "Choose shipment" page opens, pre-filled oldest first, with a Spot box.
    - "Free" = left after sent orders AND after what's already in the cart, so
      the same batch can't be promised twice before sending.
    ============================================================ */
@@ -2453,7 +2453,9 @@ function newCartLine(item, qty, shipmentId) {
 function planCartAdd(item, qty) {
   const batches = pickableBatches(item);
   if (!batches.length) return { lines: [newCartLine(item, qty)] };
-  if (batchFree(batches[0]) >= qty) return { lines: [newCartLine(item, qty, batches[0].id)] };
+  // Only one batch and it covers it -> no need to choose. Two or more batches
+  // -> always let Steven choose (pre-filled oldest first).
+  if (batches.length === 1 && batchFree(batches[0]) >= qty) return { lines: [newCartLine(item, qty, batches[0].id)] };
   return { entry: { itemId: item.id, want: qty, alloc: autoAllocate(batches, qty).alloc, spot: 0 } };
 }
 function openShipmentPicker(entries, ready) {
@@ -2477,7 +2479,7 @@ function pickEntryStatus(e) {
 }
 function renderShipmentPicker(m) {
   const multi = m.entries.length > 1 || m.ready.length > 0;
-  const readyNote = m.ready.length ? `<div class="text-xs mb2" style="background:var(--green);color:var(--forest);border-radius:10px;padding:8px 10px;">✓ Ready to go (one batch covers it, or none landed): ${m.ready.map((l) => {
+  const readyNote = m.ready.length ? `<div class="text-xs mb2" style="background:var(--green);color:var(--forest);border-radius:10px;padding:8px 10px;">✓ Ready to go (only one batch, or none landed): ${m.ready.map((l) => {
       const it = state.items.find((i) => i.id === l.itemId);
       return `${escapeHtml(it ? it.name : '')} ${l.qty}${l.spot ? ' (spot)' : ''}`;
     }).join(', ')}</div>` : '';
@@ -2516,7 +2518,7 @@ function renderShipmentPicker(m) {
   }).join('');
   const body = `
     ${readyNote}
-    <p class="text-xs faint mb2">${m.entries.length > 1 ? `These ${m.entries.length} items need more than one batch.` : 'The oldest batch can\'t cover all of it.'} Filled oldest first — change any box if you like.</p>
+    <p class="text-xs faint mb2">${m.entries.length > 1 ? `These ${m.entries.length} items have more than one batch, or not enough left.` : 'Choose which batch to take it from.'} Filled oldest first — just tap Add if that's fine.</p>
     <div style="display:flex;flex-direction:column;gap:10px;">${blocks}</div>
     <div style="height:80px;"></div>`;
   const footer = `<div class="pick-footer row gap2">
