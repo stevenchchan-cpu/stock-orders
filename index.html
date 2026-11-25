@@ -88,6 +88,13 @@
   .modal-head h2 { font-family:'Space Grotesk',sans-serif; font-size:18px; font-weight:600; }
   .modal-close { background:var(--tint); border-radius:999px; padding:6px; }
   .modal-body { padding:20px; padding-bottom:40px; }
+  .pick-batch { border:1px solid var(--border); background:#fff; border-radius:12px; padding:10px 12px; display:flex; align-items:center; gap:10px; }
+  .pick-batch.on { border-color:var(--forest); background:#F1F7F5; }
+  .pick-batch .pick-q { width:64px !important; flex:0 0 64px; text-align:center; padding:8px 4px !important; }
+  .pick-pill { font-size:10px; font-weight:600; border-radius:999px; padding:1px 7px; background:var(--green); color:var(--forest); }
+  .pick-short { margin-top:8px; background:var(--amber-bg); border:1px solid var(--amber-border); color:var(--amber-text); border-radius:12px; padding:10px 12px; font-size:13px; }
+  .pick-footer { position:fixed; left:0; right:0; bottom:0; z-index:5; background:var(--cream); border-top:1px solid var(--border); padding:12px 20px calc(12px + env(safe-area-inset-bottom)); }
+  .batch-tag { font-size:10px; font-weight:600; border-radius:999px; padding:1px 7px; margin-left:4px; }
 
   .toast { position:fixed; left:16px; right:16px; top:16px; z-index:60; background:var(--ink); color:var(--cream); padding:12px 16px; border-radius:12px; font-size:14px; font-weight:500; box-shadow:0 8px 24px rgba(0,0,0,.2); }
 
@@ -506,34 +513,49 @@ function effectiveSupplierId(cartLine, item) {
 function addToCart(itemId, qty) {
   if (!qty || qty <= 0) return;
   const item = state.items.find((i) => i.id === itemId);
-  const supplier = state.suppliers.find((s) => s.id === (item && item.supplierId));
-  const pickupWarehouseId = effectivePickupWarehouseId(item, supplier);
-  const qp = cartPrefillPrice(item);
-  updateCart([...state.cart, { id: uid(), itemId, qty, ...(pickupWarehouseId ? { pickupWarehouseId } : {}), ...(qp > 0 ? { price: qp } : {}) }]);
-  state.draftQty[itemId] = '';
+  if (!item) return;
+  const plan = planCartAdd(item, qty);
+  if (plan.lines) {
+    updateCart([...state.cart, ...plan.lines]);
+    state.draftQty[itemId] = '';
+    return;
+  }
+  openShipmentPicker([plan.entry], []); // draft is kept until the picker is confirmed
 }
 
+// Items whose batches need a choice go to ONE picker page together; the rest
+// are held back and added in the same tap, so Cancel adds nothing.
 function addAllToCart() {
   const entries = Object.entries(state.draftQty).filter(([, v]) => parseFloat(v) > 0);
   if (entries.length === 0) return;
-  const newLines = entries.map(([itemId, v]) => {
-    const qty = parseFloat(v);
+  const ready = [];
+  const queue = [];
+  entries.forEach(([itemId, v]) => {
     const item = state.items.find((i) => i.id === itemId);
-    const supplier = state.suppliers.find((s) => s.id === (item && item.supplierId));
-    const pickupWarehouseId = effectivePickupWarehouseId(item, supplier);
-    const qp = cartPrefillPrice(item);
-    return { id: uid(), itemId, qty, ...(pickupWarehouseId ? { pickupWarehouseId } : {}), ...(qp > 0 ? { price: qp } : {}) };
+    if (!item) return;
+    const plan = planCartAdd(item, parseFloat(v));
+    if (plan.lines) ready.push(...plan.lines); else queue.push(plan.entry);
   });
-  updateCart([...state.cart, ...newLines]);
+  if (queue.length) { openShipmentPicker(queue, ready); return; }
+  updateCart([...state.cart, ...ready]);
   entries.forEach(([itemId]) => { state.draftQty[itemId] = ''; });
 }
 
 function setCartQty(lineId, qty) {
   if (qty <= 0) {
     updateCart(state.cart.filter((c) => c.id !== lineId));
-  } else {
-    updateCart(state.cart.map((c) => (c.id === lineId ? { ...c, qty } : c)));
+    return;
   }
+  const line = state.cart.find((c) => c.id === lineId);
+  const sh = line && line.shipmentId && state.shipments.find((s) => s.id === line.shipmentId);
+  if (sh && qty > line.qty) {
+    const free = batchFree(sh, lineId);
+    if (qty > free) {
+      showToast(`Only ${free} left in ${sh.header || 'that batch'}. Add more from the Orders tab.`);
+      return;
+    }
+  }
+  updateCart(state.cart.map((c) => (c.id === lineId ? { ...c, qty } : c)));
 }
 
 function setCartPickupWarehouse(lineId, warehouseId) {
@@ -545,18 +567,26 @@ function setCartSupplierOverride(lineId, supplierId) {
     if (c.id !== lineId) return c;
     const item = state.items.find((i) => i.id === c.itemId);
     const newSupplier = state.suppliers.find((s) => s.id === supplierId);
-    // Moving to a different supplier means it's physically collected from
-    // wherever THAT supplier's stock sits — any previously-set pickup
-    // warehouse (auto or manual) no longer applies, so recompute it fresh.
-    // Switching to a DIFFERENT supplier uses that supplier's default warehouse
-    // (the item's own pickup default belongs to its usual supplier, so it
-    // doesn't apply). Switching back to the usual supplier restores the
-    // normal default (item first, then supplier).
     const next = { ...c };
+    // A line linked to a batch: move it to the new supplier's oldest batch
+    // if that one has room for the whole line, otherwise it becomes spot.
+    // A spot line stays spot (you're buying at spot from that supplier).
+    let batch = null;
+    if (c.shipmentId) {
+      batch = pickableBatches(item, c.id).find((b) => b.supplierId === supplierId && batchFree(b, c.id) >= c.qty) || null;
+      delete next.shipmentId;
+      if (batch) next.shipmentId = batch.id;
+      else next.spot = true;
+    }
+    // Moving to a different supplier means it's collected from wherever THAT
+    // stock sits: the batch's warehouse if linked, else that supplier's
+    // default (the item's own pickup default belongs to its usual supplier).
     const isOtherSupplier = item && supplierId && supplierId !== item.supplierId;
-    const newPickup = isOtherSupplier
-      ? (newSupplier && newSupplier.defaultWarehouseId) || ''
-      : effectivePickupWarehouseId(item, newSupplier);
+    const newPickup = batch
+      ? shipmentWarehouseId(batch)
+      : isOtherSupplier
+        ? (newSupplier && newSupplier.defaultWarehouseId) || ''
+        : effectivePickupWarehouseId(item, newSupplier);
     if (newPickup) next.pickupWarehouseId = newPickup;
     else delete next.pickupWarehouseId;
 
@@ -615,6 +645,8 @@ function sendSupplierOrder(group, dateStr) {
       unit: l.item.unit,
       toOwnWarehouse: l.toOwnWarehouse || false,
       pickupWarehouseId: l.pickupWarehouseId || '',
+      ...(l.shipmentId ? { shipmentId: l.shipmentId } : {}),
+      ...(l.spot ? { spot: true } : {}),
       ...(Number(l.price) > 0 ? { price: Number(l.price) } : {}),
     })),
     placedAt: new Date().toISOString(),
@@ -652,6 +684,8 @@ function cancelOrder(order) {
       ...(override ? { supplierOverride: override } : {}),
       ...(line.toOwnWarehouse ? { toOwnWarehouse: true } : {}),
       ...(line.pickupWarehouseId ? { pickupWarehouseId: line.pickupWarehouseId } : {}),
+      ...(line.shipmentId ? { shipmentId: line.shipmentId } : {}),
+      ...(line.spot ? { spot: true } : {}),
       ...(Number(line.price) > 0 ? { price: Number(line.price) } : {}),
     };
   });
@@ -705,7 +739,48 @@ function reviseOrderItems(orderId, nextItemsFn) {
   });
 
   const nextDrawdowns = [];
-  const allItemIds = new Set([...oldWanted.keys(), ...newWanted.keys()]);
+
+  // NEW-STYLE lines (linked to a batch, or spot): each batch simply ends up
+  // holding what this order's lines on it add up to. Lower -> give the
+  // difference back to that batch. Higher -> take more from that batch only;
+  // anything it can't hold is spot (nothing drawn) and you're told.
+  const isNewStyle = (l) => !!(l.shipmentId || l.spot);
+  const newStyleItems = new Set([...order.items, ...nextItems].filter(isNewStyle).map((l) => l.itemId));
+  const wantByShip = new Map();
+  nextItems.forEach((l) => {
+    if (!l.shipmentId) return;
+    wantByShip.set(l.shipmentId, (wantByShip.get(l.shipmentId) || 0) + (Number(l.qty) || 0));
+  });
+  const drawnByShip = new Map();
+  (order.drawdowns || []).forEach((dd) => {
+    const sh = shipments.find((s) => s.id === dd.shipmentId);
+    if (!sh || !newStyleItems.has(sh.itemId)) return;
+    drawnByShip.set(dd.shipmentId, (drawnByShip.get(dd.shipmentId) || 0) + (Number(dd.qty) || 0));
+  });
+  let notCovered = 0;
+  new Set([...wantByShip.keys(), ...drawnByShip.keys()]).forEach((sid) => {
+    const want = wantByShip.get(sid) || 0;
+    const drawn = drawnByShip.get(sid) || 0;
+    const sh = shipments.find((s) => s.id === sid);
+    if (!sh) return;
+    let now = drawn;
+    if (want < drawn) {
+      sh.drawnDown = Math.max(0, (Number(sh.drawnDown) || 0) - (drawn - want));
+      if (shipmentRemaining(sh) > 0) delete sh.finishedAt;
+      now = want;
+    } else if (want > drawn) {
+      const take = Math.min(shipmentRemaining(sh), want - drawn);
+      sh.drawnDown = (Number(sh.drawnDown) || 0) + take;
+      if (shipmentRemaining(sh) <= 0 && !sh.finishedAt) sh.finishedAt = todayStr();
+      now = drawn + take;
+      notCovered += want - now;
+    }
+    if (now > 0) nextDrawdowns.push({ shipmentId: sid, qty: now });
+  });
+  if (notCovered > 0) showToast(`The batch only had room for part of that — ${Math.round(notCovered * 1000) / 1000} isn't from a shipment (spot).`);
+
+  // OLD-STYLE lines (orders sent before the shipment picker): unchanged rules below.
+  const allItemIds = new Set([...oldWanted.keys(), ...newWanted.keys()].filter((id) => !newStyleItems.has(id)));
 
   allItemIds.forEach((itemId) => {
     const delta = (newWanted.get(itemId) || 0) - (oldWanted.get(itemId) || 0);
@@ -1024,7 +1099,8 @@ const FILTER_FIELDS = [
   {
     key: 'supplier', label: 'Supplier',
     getOptions: (items, suppliers) => [...suppliers].sort((a, b) => (a.name || '').localeCompare(b.name || '', 'zh-Hant')).map((s) => ({ value: s.id, label: s.name })),
-    matches: (item, value) => item.supplierId === value,
+    // Matches the supplier shown on the row (the oldest batch's, if any).
+    matches: (item, value) => rowSupplierId(item) === value,
   },
   {
     key: 'tag', label: 'Tag',
@@ -1036,10 +1112,7 @@ const FILTER_FIELDS = [
     getOptions: (items, suppliers, warehouses) => (warehouses || []).map((w) => ({ value: w.id, label: w.name })),
     // Pickup location resolves item override -> supplier default, the same way
     // the order rows and driver collection messages do it.
-    matches: (item, value) => {
-      const supplier = state.suppliers.find((s) => s.id === item.supplierId);
-      return effectivePickupWarehouseId(item, supplier) === value;
-    },
+    matches: (item, value) => rowWarehouseId(item) === value,
   },
 ];
 
@@ -1086,8 +1159,11 @@ function renderOrdersTab() {
     const draft = state.draftQty[item.id] || '';
     const b = incomingBreakdown[item.id] || { cumulative: 0, exact: 0, future: 0 };
     const hasIncoming = orderingForToday ? (b.exact > 0 || b.future > 0) : (b.cumulative > 0 || b.exact > 0 || b.future > 0);
-    const supplier = state.suppliers.find((s) => s.id === item.supplierId);
-    const pickupWarehouse = state.warehouses.find((w) => w.id === effectivePickupWarehouseId(item, supplier));
+    // Supplier · warehouse come from the oldest landed batch (any supplier), if there is one.
+    const rowBatch = orderRowBatch(item);
+    const supplier = state.suppliers.find((s) => s.id === (rowBatch ? rowBatch.supplierId : item.supplierId));
+    const notUsualSupplier = !!(rowBatch && rowBatch.supplierId !== item.supplierId);
+    const pickupWarehouse = state.warehouses.find((w) => w.id === rowWarehouseId(item));
     const incomingText = hasIncoming
       ? (orderingForToday ? `${b.exact} | ${b.future}` : `${b.cumulative} | ${b.exact} | ${b.future}`)
       : '';
@@ -1095,21 +1171,19 @@ function renderOrdersTab() {
       ? `<div class="row wrap" style="gap:4px;margin-top:2px;">${item.tags.map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join('')}</div>` : '';
     const nameLower = item.name.toLowerCase();
     const codeLower = (item.itemCode || '').toLowerCase();
-    const avail = drawdownAvailability(item);
-    // Rent-free date of the batch an order would draw from, as just d/m (no label)
-    // (e.g. 14/11). Amber within 7 days, red once passed.
+    // Rent-free date of that oldest batch, as just d/m (e.g. 14/11). Amber within 7 days, red once passed.
     let rfHtml = '';
-    if (avail && avail.qty > 0 && avail.deadline) {
-      const [, mm, dd] = avail.deadline.split('-');
-      const left = daysFromToday(avail.deadline);
+    if (rowBatch && rowBatch.deadline) {
+      const [, mm, dd] = rowBatch.deadline.split('-');
+      const left = daysFromToday(rowBatch.deadline);
       const rfColor = left < 0 ? 'var(--red-text)' : left <= 7 ? 'var(--amber-strong)' : 'var(--muted)';
       rfHtml = ` <span style="font-size:10px;font-weight:500;color:${rfColor};">${Number(dd)}/${Number(mm)}</span>`;
     }
     // ω = nothing landed from any supplier, but a shipment is in transit.
-    const omega = !avail && hasInTransit(item);
-    // The whole stock figure is a link to this item's Runway timeline.
-    const availHtml = avail
-      ? `<span class="shrink0" style="white-space:nowrap;"> · <button data-open-runway-detail="${item.id}" class="avail-link"><span style="color:var(--forest);font-weight:600;">${avail.qty}</span>${rfHtml ? ` <span class="faint">|</span>${rfHtml}` : ''}${(avail.alpha || avail.beta) ? ` <span style="color:var(--forest);font-weight:600;">${[avail.alpha ? 'α' : '', avail.beta ? 'β' : ''].filter(Boolean).join(' ')}</span>` : ''}</button></span>`
+    const omega = !rowBatch && hasInTransit(item);
+    // The whole stock figure is a link to this item's Runway timeline. "+N" = other batches with room.
+    const availHtml = rowBatch
+      ? `<span class="shrink0" style="white-space:nowrap;"> · <button data-open-runway-detail="${item.id}" class="avail-link"><span style="color:var(--forest);font-weight:600;">${rowBatch.qty}</span>${rfHtml ? ` <span class="faint">|</span>${rfHtml}` : ''}${rowBatch.more ? ` <span style="color:var(--forest);font-weight:600;">+${rowBatch.more}</span>` : ''}</button></span>`
       : omega
         ? `<span class="shrink0" style="white-space:nowrap;"> · <button data-open-runway-detail="${item.id}" class="avail-link"><span style="color:var(--forest);font-weight:600;">0</span> <span style="color:#3B7EA1;font-weight:600;">ω</span></button></span>`
         : '';
@@ -1127,7 +1201,7 @@ function renderOrdersTab() {
           <button data-edit-item="${item.id}" class="index-badge index-link" title="Edit this item">#${index}</button>
           <div class="flex1" style="min-width:0;">
             <button data-quote-item="${item.id}" class="price-link text-sm truncate" style="display:block;max-width:100%;font-weight:500;color:var(--ink);text-decoration:underline;text-decoration-color:var(--border);text-underline-offset:3px;" title="Enter a quoted price">${escapeHtml(item.name)}</button>
-            <div class="text-xs muted" style="display:flex;min-width:0;"><span class="truncate" style="min-width:0;">${escapeHtml(supplier ? supplier.name : 'No supplier')} · ${escapeHtml(pickupWarehouse ? pickupWarehouse.name : 'varies')}</span>${availHtml}</div>
+            <div class="text-xs muted" style="display:flex;min-width:0;"><span class="truncate" style="min-width:0;">${notUsualSupplier ? `<span style="color:var(--amber-strong);font-weight:600;">${escapeHtml(supplier ? supplier.name : '')}</span>` : escapeHtml(supplier ? supplier.name : 'No supplier')} · ${escapeHtml(pickupWarehouse ? pickupWarehouse.name : 'varies')}</span>${availHtml}</div>
             ${tagsHtml}
             ${hasIncoming ? `<div class="text-xs truncate font-mono muted" data-incoming-text>${incomingText}</div>` : ''}
           </div>
@@ -1364,7 +1438,7 @@ function renderCartLineRow(l, supplierIdForCard) {
         <div class="flex1">
           <button data-edit-cart-price="${l.id}" class="price-link" style="color:var(--ink-soft);text-decoration:underline;text-decoration-color:var(--border);text-underline-offset:3px;">${escapeHtml(l.item.name)}</button>
           ${l.toOwnWarehouse ? `<span class="text-xs" style="margin-left:4px;font-weight:600;color:var(--amber-text);">(W)</span>` : ''}
-          ${l.supplierOverride ? `<div class="text-xs" style="color:var(--amber-strong);">moved from ${escapeHtml((state.suppliers.find((s) => s.id === l.item.supplierId) || {}).name || 'original supplier')}</div>` : ''}
+          ${l.supplierOverride ? `<div class="text-xs" style="color:var(--amber-strong);">${l.shipmentId ? 'usual' : 'moved from'} ${escapeHtml((state.suppliers.find((s) => s.id === l.item.supplierId) || {}).name || 'original supplier')}</div>` : ''}
         </div>
         <div class="row shrink0" style="gap:6px;">
           <div class="row" style="gap:4px;">
@@ -1379,7 +1453,7 @@ function renderCartLineRow(l, supplierIdForCard) {
           <button data-remove-line="${l.id}">${icon('x', 14, 'var(--faint)')}</button>
         </div>
       </div>
-          <div class="text-xs" style="display:flex;gap:4px;margin-top:1px;min-width:0;white-space:nowrap;"><span class="truncate" style="min-width:0;color:${pickupWh ? 'var(--muted)' : 'var(--amber-strong)'};">${pickupWh ? escapeHtml(pickupWh.name) : 'no pickup set'}</span><span class="faint">·</span><button data-edit-cart-price="${l.id}" class="price-link shrink0" style="${Number(l.price) > 0 ? 'color:var(--forest);font-weight:600;' : 'color:var(--faint);'}">${Number(l.price) > 0 ? fmtMoney(l.price) : '$ —'}</button></div>
+          <div class="text-xs" style="display:flex;gap:4px;margin-top:1px;min-width:0;white-space:nowrap;"><span class="truncate" style="min-width:0;color:${pickupWh ? 'var(--muted)' : 'var(--amber-strong)'};">${pickupWh ? escapeHtml(pickupWh.name) : 'no pickup set'}</span><span class="faint">·</span><button data-edit-cart-price="${l.id}" class="price-link shrink0" style="${Number(l.price) > 0 ? 'color:var(--forest);font-weight:600;' : 'color:var(--faint);'}">${Number(l.price) > 0 ? fmtMoney(l.price) : '$ —'}</button>${cartBatchTag(l)}</div>
       ${isEditingPickup ? `
         <div class="mt1" style="display:flex;">
           <select data-set-pickup="${l.id}" style="font-size:13px;padding:6px 8px;">
@@ -1394,6 +1468,17 @@ function renderCartLineRow(l, supplierIdForCard) {
           </select>
         </div>` : ''}
     </div>`;
+}
+
+// Small tag on a cart line: which batch it comes from, or Spot.
+function cartBatchTag(l) {
+  if (l.shipmentId) {
+    const sh = state.shipments.find((s) => s.id === l.shipmentId);
+    if (!sh) return `<span class="batch-tag" style="background:var(--amber-bg);color:var(--amber-text);">batch gone · spot</span>`;
+    return `<span class="batch-tag truncate" style="background:var(--green);color:var(--forest);min-width:0;">${escapeHtml(sh.header || 'Shipment')}${sh.rentFreeDeadline ? ' · ' + shortDate(sh.rentFreeDeadline) : ''}</span>`;
+  }
+  if (l.spot) return `<span class="batch-tag shrink0" style="background:var(--amber-bg);color:var(--amber-text);">Spot</span>`;
+  return '';
 }
 
 function renderIncomingSection(incomingOrders) {
@@ -2150,6 +2235,10 @@ function renderRunwayDetailModal(m) {
 }
 
 /* ---- Shipment form (add/edit) — reached only from a Key SKU's detail view ---- */
+function supplierDefaultWarehouse(supplierId) {
+  const sup = state.suppliers.find((s) => s.id === supplierId);
+  return (sup && sup.defaultWarehouseId) || '';
+}
 function openShipmentModal(mode, shipment, itemId, returnTo) {
   const item = state.items.find((i) => i.id === itemId);
   const draft = shipment ? {
@@ -2160,10 +2249,14 @@ function openShipmentModal(mode, shipment, itemId, returnTo) {
     rentFreeDeadline: shipment.rentFreeDeadline || '', received: !!shipment.received,
     notes: shipment.notes || '', drawnDown: shipment.drawnDown ?? 0,
     rfAuto: defaultRentFreeDeadline(shipment.etaDate || ''),
+    warehouseId: shipmentWarehouseId(shipment),
+    whAuto: shipment.warehouseId ? '' : shipmentWarehouseId(shipment),
   } : {
     itemId, header: '', supplierId: (item ? item.supplierId : '') || '', askingPrice: '',
     quantity: 0, etaDate: '', rentFreeDeadline: '', received: false, notes: '', drawnDown: 0,
     rfAuto: '',
+    warehouseId: supplierDefaultWarehouse(item ? item.supplierId : ''),
+    whAuto: supplierDefaultWarehouse(item ? item.supplierId : ''),
   };
   openModal({ type: 'shipment', mode, data: shipment, draft, returnTo });
 }
@@ -2182,6 +2275,11 @@ function renderShipmentForm(m) {
         <option value="">Not set</option>
         ${sortedSuppliers().map((s) => `<option value="${s.id}" ${s.id === d.supplierId ? 'selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}
       </select>`)}
+    ${fieldHtml('Warehouse', `<select id="f_warehouseId">
+        <option value="">Not set</option>
+        ${state.warehouses.map((w) => `<option value="${w.id}" ${w.id === d.warehouseId ? 'selected' : ''}>${escapeHtml(w.name)}</option>`).join('')}
+      </select>`)}
+    <p class="hint">Fills in with the supplier's usual warehouse. Change it if this batch sits somewhere else — orders from this batch will default to picking up here.</p>
     <div class="row gap2">
       <div class="flex1">${fieldHtml('Quantity', `<input type="number" inputmode="decimal" id="f_quantity" value="${d.quantity}">`)}</div>
       <div class="flex1">${fieldHtml('Asking price (optional)', `<input type="number" inputmode="decimal" id="f_askingPrice" value="${d.askingPrice}">`)}</div>
@@ -2258,33 +2356,243 @@ function shipmentRemaining(s) {
   return Math.max(0, (Number(s.quantity) || 0) - (Number(s.drawnDown) || 0));
 }
 
-/* What's drawable for an item right now, for the Orders tab line.
-   Deliberately narrow so the number is unambiguous:
-   - LANDED only. In-transit stock can't be collected, so it isn't offered.
-   - ONE batch — the one an order placed now would actually hit first
-     (earliest rent-free deadline, same rule as applyDrawdownsForOrder).
-   - Already net of pending orders, since shipmentRemaining subtracts their
-     drawdowns — so it's what's genuinely still claimable, not gross stock.
-   Markers flag what's behind it: alpha = another batch from the same
-   supplier, beta = a different supplier also holds drawable stock. */
-function drawdownAvailability(item) {
-  if (!item || !item.keySku) return null; // only Key SKUs draw down
-  const landed = state.shipments.filter(
-    (s) => s.itemId === item.id && s.received && shipmentRemaining(s) > 0
-  );
-  if (landed.length === 0) return null;
-
-  const byDeadline = (a, b) =>
-    (a.rentFreeDeadline || '9999-99-99').localeCompare(b.rentFreeDeadline || '9999-99-99');
-  const own = landed.filter((s) => s.supplierId === item.supplierId).sort(byDeadline);
-  const others = landed.filter((s) => s.supplierId !== item.supplierId);
-
+/* ============================================================
+   SHIPMENT PICKER — which landed batch a cart line comes from.
+   - Every Key SKU cart line is either LINKED to one batch (shipmentId) or
+     marked SPOT (spot: true = bought at spot rate, not from any batch).
+   - Batches from ANY supplier are offered, oldest first = earliest rent-free
+     deadline (the one that starts costing rent soonest).
+   - The Orders tab row shows the oldest batch's supplier · warehouse · free qty.
+   - Adding: no landed batch -> spot line. Oldest batch covers the whole qty ->
+     linked to it straight away. Otherwise the "Choose shipment" page opens,
+     pre-filled oldest first, with a Spot box.
+   - "Free" = left after sent orders AND after what's already in the cart, so
+     the same batch can't be promised twice before sending.
+   ============================================================ */
+function byRentFree(a, b) {
+  return (a.rentFreeDeadline || '9999-99-99').localeCompare(b.rentFreeDeadline || '9999-99-99');
+}
+// Which warehouse a batch sits in: its own setting, else its supplier's usual one.
+function shipmentWarehouseId(s) {
+  if (!s) return '';
+  if (s.warehouseId) return s.warehouseId;
+  const sup = state.suppliers.find((x) => x.id === s.supplierId);
+  return (sup && sup.defaultWarehouseId) || '';
+}
+function cartQtyOnBatch(shipmentId, exceptLineId) {
+  return state.cart.reduce((sum, c) =>
+    sum + (c.shipmentId === shipmentId && c.id !== exceptLineId ? (Number(c.qty) || 0) : 0), 0);
+}
+function batchFree(s, exceptLineId) {
+  return Math.max(0, Math.round((shipmentRemaining(s) - cartQtyOnBatch(s.id, exceptLineId)) * 1000) / 1000);
+}
+// Landed batches of a Key SKU from ANY supplier with room left, oldest first.
+function pickableBatches(item, exceptLineId) {
+  if (!item || !item.keySku) return [];
+  return state.shipments
+    .filter((s) => s.itemId === item.id && s.received && batchFree(s, exceptLineId) > 0)
+    .sort(byRentFree);
+}
+// What the Orders tab row shows: the oldest batch, or null (no landed stock).
+function orderRowBatch(item) {
+  const batches = pickableBatches(item);
+  if (!batches.length) return null;
+  const b = batches[0];
   return {
-    qty: own.length ? shipmentRemaining(own[0]) : 0,
-    deadline: own.length ? (own[0].rentFreeDeadline || '') : '', // rent-free date of that same batch
-    alpha: own.length > 1,      // another batch from this supplier
-    beta: others.length > 0,    // another supplier holds stock too
+    batch: b,
+    supplierId: b.supplierId || item.supplierId,
+    warehouseId: shipmentWarehouseId(b),
+    qty: batchFree(b),
+    deadline: b.rentFreeDeadline || '',
+    more: batches.length - 1, // other batches with room (shown as "+N")
   };
+}
+// Supplier / warehouse the Orders tab shows (and filters on) for an item.
+function rowSupplierId(item) {
+  const r = orderRowBatch(item);
+  return r ? r.supplierId : item.supplierId;
+}
+function rowWarehouseId(item) {
+  const r = orderRowBatch(item);
+  if (r && r.warehouseId) return r.warehouseId;
+  const supplier = state.suppliers.find((s) => s.id === item.supplierId);
+  return effectivePickupWarehouseId(item, supplier);
+}
+// Fill oldest batch first, spilling into the next.
+function autoAllocate(batches, qty) {
+  const alloc = {};
+  let left = qty;
+  batches.forEach((b) => {
+    if (left <= 0) return;
+    const take = Math.min(batchFree(b), left);
+    if (take > 0) { alloc[b.id] = take; left = Math.round((left - take) * 1000) / 1000; }
+  });
+  return { alloc, short: left };
+}
+// One cart line. Linked: that batch's supplier + warehouse. Otherwise the
+// item's usual supplier + warehouse (Key SKUs are then marked spot).
+function newCartLine(item, qty, shipmentId) {
+  const line = { id: uid(), itemId: item.id, qty };
+  const sh = shipmentId && state.shipments.find((s) => s.id === shipmentId);
+  if (sh) {
+    line.shipmentId = sh.id;
+    const wh = shipmentWarehouseId(sh);
+    if (wh) line.pickupWarehouseId = wh;
+    if (sh.supplierId && sh.supplierId !== item.supplierId) line.supplierOverride = sh.supplierId;
+  } else {
+    const supplier = state.suppliers.find((s) => s.id === item.supplierId);
+    const wh = effectivePickupWarehouseId(item, supplier);
+    if (wh) line.pickupWarehouseId = wh;
+    if (item.keySku) line.spot = true;
+  }
+  const qp = cartPrefillPrice(item);
+  if (qp > 0) line.price = qp;
+  return line;
+}
+// Either ready-made cart lines, or an entry that needs the picker page.
+function planCartAdd(item, qty) {
+  const batches = pickableBatches(item);
+  if (!batches.length) return { lines: [newCartLine(item, qty)] };
+  if (batchFree(batches[0]) >= qty) return { lines: [newCartLine(item, qty, batches[0].id)] };
+  return { entry: { itemId: item.id, want: qty, alloc: autoAllocate(batches, qty).alloc, spot: 0 } };
+}
+function openShipmentPicker(entries, ready) {
+  openModal({ type: 'pickShipment', entries, ready });
+}
+const r3 = (n) => Math.round(n * 1000) / 1000;
+function pickEntryStatus(e) {
+  const item = state.items.find((i) => i.id === e.itemId);
+  const batches = pickableBatches(item);
+  let total = Number(e.spot) || 0;
+  const over = [];
+  Object.entries(e.alloc).forEach(([sid, q]) => {
+    q = Number(q) || 0;
+    total += q;
+    const b = batches.find((x) => x.id === sid);
+    const free = b ? batchFree(b) : 0;
+    if (q > free) over.push({ b, free });
+  });
+  total = r3(total);
+  return { total, over, ok: total > 0 && total === r3(e.want) && over.length === 0 };
+}
+function renderShipmentPicker(m) {
+  const multi = m.entries.length > 1 || m.ready.length > 0;
+  const readyNote = m.ready.length ? `<div class="text-xs mb2" style="background:var(--green);color:var(--forest);border-radius:10px;padding:8px 10px;">✓ Ready to go (one batch covers it, or none landed): ${m.ready.map((l) => {
+      const it = state.items.find((i) => i.id === l.itemId);
+      return `${escapeHtml(it ? it.name : '')} ${l.qty}${l.spot ? ' (spot)' : ''}`;
+    }).join(', ')}</div>` : '';
+  const blocks = m.entries.map((e, ei) => {
+    const item = state.items.find((i) => i.id === e.itemId);
+    const batches = pickableBatches(item);
+    const rows = batches.map((b, bi) => {
+      const q = e.alloc[b.id] || '';
+      const left = daysFromToday(b.rentFreeDeadline || '9999-12-31');
+      const rfColor = !b.rentFreeDeadline ? 'var(--muted)' : left < 0 ? 'var(--red-text)' : left <= 7 ? 'var(--amber-strong)' : 'var(--muted)';
+      return `<div class="pick-batch ${q ? 'on' : ''}" data-pick-row="${ei}|${b.id}">
+        <div class="flex1" style="min-width:0;">
+          <div class="text-sm truncate" style="font-weight:600;">${escapeHtml(b.header || 'Shipment')}${bi === 0 ? ' <span class="pick-pill">oldest</span>' : ''}</div>
+          <div class="text-xs muted truncate">${escapeHtml((state.suppliers.find((s) => s.id === b.supplierId) || {}).name || 'No supplier')} · ${escapeHtml((state.warehouses.find((w) => w.id === shipmentWarehouseId(b)) || {}).name || 'no warehouse')}</div>
+          <div class="text-xs"><span style="color:var(--forest);font-weight:600;">${batchFree(b)} left</span>${b.rentFreeDeadline ? ` <span class="faint">|</span> <span style="font-size:10px;font-weight:500;color:${rfColor};">${shortDate(b.rentFreeDeadline)}</span>` : ''}</div>
+        </div>
+        <input type="number" inputmode="decimal" class="qty-input pick-q" placeholder="0" value="${q}" data-pick="${ei}|${b.id}">
+      </div>`;
+    }).join('');
+    const spotRow = `<div class="pick-batch ${e.spot ? 'on' : ''}" style="border-style:dashed;" data-pick-row="${ei}|spot">
+        <div class="flex1" style="min-width:0;">
+          <div class="text-sm" style="font-weight:600;">Spot <span class="text-xs muted" style="font-weight:400;">— not from a shipment</span></div>
+          <div class="text-xs muted">Usual supplier · warehouse (change in cart)</div>
+        </div>
+        <input type="number" inputmode="decimal" class="qty-input pick-q" placeholder="0" value="${e.spot || ''}" data-pick="${ei}|spot">
+      </div>`;
+    return `<div class="${multi ? 'card' : ''}" style="${multi ? 'padding:12px;' : ''}">
+      <div class="row-between mb2">
+        <div><span class="font-display" style="font-weight:600;font-size:${multi ? 14 : 16}px;">${escapeHtml(item ? item.name : '')}</span>
+          <span class="text-xs muted" data-pick-want="${ei}"> · want ${e.want}${item && item.unit ? ' ' + escapeHtml(item.unit) : ''}</span></div>
+        <span class="text-xs" style="font-weight:600;" data-pick-status="${ei}"></span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:6px;">${rows}${spotRow}</div>
+      <div data-pick-fix="${ei}"></div>
+    </div>`;
+  }).join('');
+  const body = `
+    ${readyNote}
+    <p class="text-xs faint mb2">${m.entries.length > 1 ? `These ${m.entries.length} items need more than one batch.` : 'The oldest batch can\'t cover all of it.'} Filled oldest first — change any box if you like.</p>
+    <div style="display:flex;flex-direction:column;gap:10px;">${blocks}</div>
+    <div style="height:80px;"></div>`;
+  const footer = `<div class="pick-footer row gap2">
+      <span class="text-xs flex1" style="font-weight:600;" id="pickFooterStatus"></span>
+      <button data-close-modal class="btn" style="background:var(--tint);color:var(--muted);width:auto;padding:10px 16px;">Cancel</button>
+      <button data-pick-confirm class="btn btn-primary" style="width:auto;padding:10px 16px;">Add to cart</button>
+    </div>`;
+  return modalShell(m.entries.length > 1 || m.ready.length ? 'Choose shipments' : 'Choose shipment', body).replace(/<\/div>\s*$/, `${footer}</div>`);
+}
+// Refresh statuses / fix-it boxes / button in place (no re-render, keeps keyboard).
+function updatePickerState() {
+  const m = state.modal;
+  if (!m || m.type !== 'pickShipment') return;
+  let pending = 0;
+  m.entries.forEach((e, ei) => {
+    const st = pickEntryStatus(e);
+    const item = state.items.find((i) => i.id === e.itemId);
+    const statusEl = document.querySelector(`[data-pick-status="${ei}"]`);
+    if (statusEl) {
+      statusEl.textContent = `${st.total}/${e.want}${st.ok ? ' ✓' : ''}`;
+      statusEl.style.color = st.ok ? 'var(--forest)' : 'var(--amber-strong)';
+    }
+    const wantEl = document.querySelector(`[data-pick-want="${ei}"]`);
+    if (wantEl) wantEl.textContent = ` · want ${e.want}${item && item.unit ? ' ' + item.unit : ''}`;
+    document.querySelectorAll(`[data-pick-row^="${ei}|"]`).forEach((row) => {
+      const key = row.dataset.pickRow.split('|')[1];
+      const q = key === 'spot' ? e.spot : e.alloc[key];
+      row.classList.toggle('on', Number(q) > 0);
+    });
+    const fix = document.querySelector(`[data-pick-fix="${ei}"]`);
+    let html = '';
+    if (st.over.length) {
+      html = st.over.map((o) => `<b>${escapeHtml((o.b && o.b.header) || 'That batch')}</b> only has ${o.free} left.`).join('<br>');
+    } else if (st.total < r3(e.want)) {
+      const short = r3(e.want - st.total);
+      html = `<b>${short} short</b> — batches only cover ${st.total}.
+        <div class="row gap2" style="margin-top:8px;">
+          ${st.total > 0 ? `<button data-pick-fix-btn="${ei}|change" class="btn-sm" style="background:#fff;border:1px solid var(--amber-border);color:var(--amber-text);">Change to ${st.total}</button>` : ''}
+          <button data-pick-fix-btn="${ei}|spot" class="btn-sm" style="background:var(--amber-text);color:#fff;">Add ${short} as spot</button>
+        </div>`;
+    } else if (st.total > r3(e.want)) {
+      html = `${st.total} chosen, you asked for ${e.want}.
+        <div class="row gap2" style="margin-top:8px;"><button data-pick-fix-btn="${ei}|change" class="btn-sm" style="background:#fff;border:1px solid var(--amber-border);color:var(--amber-text);">Change to ${st.total}</button></div>`;
+    }
+    if (fix) fix.innerHTML = html ? `<div class="pick-short">${html}</div>` : '';
+    if (!st.ok) pending += 1;
+  });
+  const btn = document.querySelector('[data-pick-confirm]');
+  const itemCount = new Set([...m.ready.map((l) => l.itemId), ...m.entries.map((e) => e.itemId)]).size;
+  if (btn) {
+    btn.disabled = pending > 0;
+    btn.textContent = itemCount > 1 ? `Add ${itemCount} to cart` : 'Add to cart';
+  }
+  const fs = document.getElementById('pickFooterStatus');
+  if (fs) {
+    fs.textContent = pending ? `${pending} item${pending > 1 ? 's' : ''} still need${pending > 1 ? '' : 's'} a decision` : 'All set ✓';
+    fs.style.color = pending ? 'var(--amber-strong)' : 'var(--forest)';
+  }
+}
+function confirmShipmentPicker() {
+  const m = state.modal;
+  if (!m || m.type !== 'pickShipment') return;
+  if (!m.entries.every((e) => pickEntryStatus(e).ok)) return;
+  const lines = [...m.ready];
+  m.entries.forEach((e) => {
+    const item = state.items.find((i) => i.id === e.itemId);
+    if (!item) return;
+    pickableBatches(item).forEach((b) => {
+      const q = Number(e.alloc[b.id]) || 0;
+      if (q > 0) lines.push(newCartLine(item, q, b.id));
+    });
+    if (Number(e.spot) > 0) lines.push(newCartLine(item, Number(e.spot)));
+  });
+  updateCart([...state.cart, ...lines]);
+  [...m.ready, ...m.entries].forEach((x) => { state.draftQty[x.itemId] = ''; });
+  closeModal();
 }
 
 /* Omega: no landed stock from ANY supplier, but something is on the way
@@ -2440,21 +2748,31 @@ function applyDrawdownsForOrder(order) {
   const drawdowns = []; // { shipmentId, qty }
   let shipments = state.shipments.map((s) => ({ ...s }));
 
-  // Aggregate this order's lines per item (cart lines deliberately don't merge).
-  const wanted = new Map();
+  // Lines linked to a batch draw from exactly that batch. Spot lines draw
+  // nothing. Lines with neither (cart lines from before the shipment picker)
+  // still use the old automatic rule: same supplier, earliest deadline first.
+  const linked = new Map(); // shipmentId -> qty
+  const legacy = new Map(); // itemId -> qty
   order.items.forEach((line) => {
     const qty = Number(line.qty) || 0;
-    if (qty > 0) wanted.set(line.itemId, (wanted.get(line.itemId) || 0) + qty);
+    if (qty <= 0 || line.spot) return;
+    if (line.shipmentId) linked.set(line.shipmentId, (linked.get(line.shipmentId) || 0) + qty);
+    else legacy.set(line.itemId, (legacy.get(line.itemId) || 0) + qty);
   });
 
-  wanted.forEach((toDraw, itemId) => {
+  linked.forEach((toDraw, shipmentId) => {
+    const batch = shipments.find((s) => s.id === shipmentId);
+    if (batch) drawdowns.push(...drawFromBatches([batch], toDraw).taken);
+    // If the batch was deleted or ran short meanwhile, the rest is spot.
+  });
+
+  legacy.forEach((toDraw, itemId) => {
     const item = state.items.find((i) => i.id === itemId);
     if (!item || !item.keySku) return;
     const batches = shipments
       .filter((s) => s.itemId === item.id && s.received && s.supplierId === order.supplierId && shipmentRemaining(s) > 0)
-      .sort((a, b) => (a.rentFreeDeadline || '9999-99-99').localeCompare(b.rentFreeDeadline || '9999-99-99'));
+      .sort(byRentFree);
     drawdowns.push(...drawFromBatches(batches, toDraw).taken);
-    // Whatever's left after every batch from this supplier is a spot purchase.
   });
 
   if (drawdowns.length) updateShipments(shipments);
@@ -2741,6 +3059,7 @@ function renderModal() {
   else if (m.type === 'warehouse') root.innerHTML = renderWarehouseForm(m);
   else if (m.type === 'driver') root.innerHTML = renderDriverMessageModal();
   else if (m.type === 'shipment') root.innerHTML = renderShipmentForm(m);
+  else if (m.type === 'pickShipment') { root.innerHTML = renderShipmentPicker(m); updatePickerState(); }
   else if (m.type === 'runwayDetail') root.innerHTML = renderRunwayDetailModal(m);
   else if (m.type === 'quotePreview') { root.innerHTML = renderQuotePreviewModal(); if (!m.started) { m.started = true; fillQuotePreview(); } }
   wireModalEvents();
@@ -3355,6 +3674,20 @@ function onModalClick(e) {
   const btn = t.closest('button');
   if (btn && btn.hasAttribute('data-close-modal')) { closeModal(); return; }
   if (btn && handleQuoteModalClick(btn)) return;
+  if (btn && btn.hasAttribute('data-pick-confirm')) { confirmShipmentPicker(); return; }
+  if (btn && btn.dataset.pickFixBtn) {
+    const [ei, what] = btn.dataset.pickFixBtn.split('|');
+    const e = state.modal.entries[Number(ei)];
+    const st = pickEntryStatus(e);
+    if (what === 'change') e.want = st.total;
+    if (what === 'spot') {
+      e.spot = r3((Number(e.spot) || 0) + (e.want - st.total));
+      const inp = document.querySelector(`[data-pick="${ei}|spot"]`);
+      if (inp) inp.value = e.spot;
+    }
+    updatePickerState();
+    return;
+  }
 
   if (btn && btn.hasAttribute('data-save-item')) {
     refreshItemDraftFromDom();
@@ -3417,6 +3750,7 @@ function onModalClick(e) {
     const next = {
       id: state.modal.data ? state.modal.data.id : undefined,
       itemId: d.itemId, header: (d.header || '').trim(), supplierId: d.supplierId || '',
+      warehouseId: d.warehouseId || '',
       askingPrice: d.askingPrice === '' ? null : Number(d.askingPrice) || 0,
       quantity: Number(d.quantity) || 0,
       etaDate: d.etaDate, rentFreeDeadline: d.rentFreeDeadline, received: !!d.received,
@@ -3456,6 +3790,16 @@ function onModalClick(e) {
 
 function onModalInput(e) {
   const t = e.target;
+  if (t.dataset && t.dataset.pick && state.modal && state.modal.type === 'pickShipment') {
+    const [ei, key] = t.dataset.pick.split('|');
+    const entry = state.modal.entries[Number(ei)];
+    const v = Math.max(0, parseFloat(t.value) || 0);
+    if (key === 'spot') entry.spot = v;
+    else if (v > 0) entry.alloc[key] = v;
+    else delete entry.alloc[key];
+    updatePickerState();
+    return;
+  }
   if (t.id && t.id.startsWith('f_') && state.modal) {
     // Keep the draft roughly in sync as the user types (cheap; avoids losing text on unrelated re-renders).
     const d = state.modal.draft;
@@ -3471,6 +3815,16 @@ function onModalInput(e) {
         if (rfEl) rfEl.value = next;
       }
       d.rfAuto = next;
+    }
+    // Supplier drives the default warehouse, unless the warehouse was picked by hand.
+    if (key === 'supplierId' && state.modal.type === 'shipment') {
+      const next = supplierDefaultWarehouse(d.supplierId);
+      if (!d.warehouseId || d.warehouseId === d.whAuto) {
+        d.warehouseId = next;
+        const whEl = document.getElementById('f_warehouseId');
+        if (whEl) whEl.value = next;
+      }
+      d.whAuto = next;
     }
     updateSaveButtonState();
   }
