@@ -504,7 +504,7 @@ function updateItems(next) { state.items = next; persist('items'); }
 function updateCart(next) { state.cart = next; persist('cart'); }
 function updateOrders(next) { state.orders = next; persist('orders'); }
 function updateWarehouses(next) { state.warehouses = next; persist('warehouses'); }
-function updateShipments(next) { state.shipments = next; persist('shipments'); }
+function updateShipments(next) { state.shipments = next; persist('shipments'); rememberFinishedBatchCosts(next); }
 
 function effectiveSupplierId(cartLine, item) {
   return cartLine.supplierOverride || (item && item.supplierId);
@@ -2678,6 +2678,33 @@ function batchCost(s) {
   return { base, months, rent: months * RENT_PER_MONTH, total: base + months * RENT_PER_MONTH };
 }
 
+// When a landed batch is fully drawn down, keep its cost on the item
+// (lastBatchCost) so the Orders/Quote pages still have a cost once no stock
+// is left — finished shipments are deleted after 7 days. Rent is counted up
+// to the day it finished, not today. Most recently finished batch wins; on
+// the same day, the higher cost wins.
+function rememberFinishedBatchCosts(shipments) {
+  let changed = false;
+  const items = state.items.map((it) => {
+    let best = it.lastBatchCost || null;
+    (shipments || []).forEach((s) => {
+      if (s.itemId !== it.id || !s.received || !s.finishedAt) return;
+      const base = Number(s.askingPrice);
+      if (!(base > 0)) return;
+      const price = base + monthsOverRentFree(s.rentFreeDeadline, s.finishedAt) * RENT_PER_MONTH;
+      const cand = { price, date: s.finishedAt, shipmentId: s.id };
+      if (!best
+        || (best.shipmentId === s.id && (best.price !== price || best.date !== s.finishedAt))
+        || (best.shipmentId !== s.id && (s.finishedAt > best.date || (s.finishedAt === best.date && price > best.price)))) {
+        best = cand;
+      }
+    });
+    if (best && best !== it.lastBatchCost) { changed = true; return { ...it, lastBatchCost: best }; }
+    return it;
+  });
+  if (changed) updateItems(items);
+}
+
 // Only what's genuinely still unclaimed in the warehouse counts: quantity
 // already drawn down by orders (collected or not) is left out.
 function weightedAvgCost(item) {
@@ -2709,14 +2736,18 @@ function orderPurchasesForItem(itemId) {
 
 // Latest cart price for the item. Falls back to the copy kept on the item,
 // so it survives old orders being cleared out after 90 days.
-function latestCost(item) {
+function latestCost(item, withBatch = true) {
   if (!item) return null;
   const rows = orderPurchasesForItem(item.id);
   const q = item.quote && Number(item.quote.price) > 0 ? item.quote : null;
   if (q && (!rows.length || (q.at || '') > (rows[0].placedAt || ''))) return { price: Number(q.price), date: q.date || '', quote: true };
-  if (rows.length) return { price: rows[0].price, date: rows[0].date };
-  if (item.lastCost && Number(item.lastCost.price) > 0) return { price: Number(item.lastCost.price), date: item.lastCost.date || '' };
-  return null;
+  let last = null;
+  if (rows.length) last = { price: rows[0].price, date: rows[0].date };
+  else if (item.lastCost && Number(item.lastCost.price) > 0) last = { price: Number(item.lastCost.price), date: item.lastCost.date || '' };
+  // Cost of the last finished batch, if it's newer than the last cart price.
+  const b = item.lastBatchCost;
+  if (withBatch && b && Number(b.price) > 0 && (!last || (b.date || '') > (last.date || ''))) return { price: Number(b.price), date: b.date || '', batch: true };
+  return last;
 }
 
 // Orders tab: average if there's landed stock with a price, otherwise latest.
@@ -2935,6 +2966,7 @@ function effectiveBurn(item) {
 const ORDER_RETENTION_DAYS = 90;
 const FINISHED_SHIPMENT_RETENTION_DAYS = 7;
 function pruneOldData() {
+  rememberFinishedBatchCosts(state.shipments); // before any finished batch is deleted
   const orderCutoff = new Date();
   orderCutoff.setDate(orderCutoff.getDate() - ORDER_RETENTION_DAYS);
   const orderCutoffStr = toLocalDateStr(orderCutoff);
@@ -3355,9 +3387,10 @@ function setItemQuote(itemId, price) {
   }));
 }
 // Price pre-filled when an item goes into the cart: the latest of a quote
-// or the last price sent on an order (or the saved last cost).
+// or the last price sent on an order (or the saved last cost). A finished
+// batch's cost (it includes storage rent) isn't used as a supplier price.
 function cartPrefillPrice(item) {
-  const l = item ? latestCost(item) : null;
+  const l = item ? latestCost(item, false) : null;
   return l && Number(l.price) > 0 ? Number(l.price) : 0;
 }
 function quotedPriceFor(item) {
