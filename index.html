@@ -1474,15 +1474,16 @@ function renderCartLineRow(l, supplierIdForCard) {
 function cartBatchTag(l) {
   if (l.shipmentId) {
     const sh = state.shipments.find((s) => s.id === l.shipmentId);
-    if (!sh) return `<button data-change-batch="${l.id}" class="batch-tag" style="background:var(--amber-bg);color:var(--amber-text);">batch gone · spot ▾</button>`;
+    if (!sh) return `<button data-change-batch="${l.id}" class="batch-tag" style="background:var(--amber-bg);color:var(--amber-text);">batch deleted ▾</button>`;
     return `<button data-change-batch="${l.id}" class="batch-tag truncate" title="Change batch" style="background:var(--green);color:var(--forest);min-width:0;">${escapeHtml(sh.header || 'Shipment')}${sh.rentFreeDeadline ? ' · ' + shortDate(sh.rentFreeDeadline) : ''} ▾</button>`;
   }
   if (l.spot) {
     const item = state.items.find((i) => i.id === l.itemId);
     const canPick = pickableBatches(item, l.id).length > 0;
     return canPick
-      ? `<button data-change-batch="${l.id}" class="batch-tag shrink0" title="Take from a batch instead" style="background:var(--amber-bg);color:var(--amber-text);">Spot ▾</button>`
-      : `<span class="batch-tag shrink0" style="background:var(--amber-bg);color:var(--amber-text);">Spot</span>`;
+      // No label: no batch tag already means spot. Just a faint ▾ to switch to a batch.
+      ? `<button data-change-batch="${l.id}" class="shrink0" title="Take from a batch instead" style="color:var(--faint);font-size:11px;padding:0 6px;">▾</button>`
+      : '';
   }
   return '';
 }
@@ -2487,7 +2488,7 @@ function renderShipmentPicker(m) {
   const multi = m.entries.length > 1 || m.ready.length > 0;
   const readyNote = m.ready.length ? `<div class="text-xs mb2" style="background:var(--green);color:var(--forest);border-radius:10px;padding:8px 10px;">✓ Ready to go (only one batch, or none landed): ${m.ready.map((l) => {
       const it = state.items.find((i) => i.id === l.itemId);
-      return `${escapeHtml(it ? it.name : '')} ${l.qty}${l.spot ? ' (spot)' : ''}`;
+      return `${escapeHtml(it ? it.name : '')} ${l.qty}`;
     }).join(', ')}</div>` : '';
   const blocks = m.entries.map((e, ei) => {
     const item = state.items.find((i) => i.id === e.itemId);
