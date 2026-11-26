@@ -1099,7 +1099,7 @@ const FILTER_FIELDS = [
   {
     key: 'supplier', label: 'Supplier',
     getOptions: (items, suppliers) => [...suppliers].sort((a, b) => (a.name || '').localeCompare(b.name || '', 'zh-Hant')).map((s) => ({ value: s.id, label: s.name })),
-    // Matches the supplier shown on the row (the oldest batch's, if any).
+    // Matches the supplier shown on the row (any batch with room, oldest matching first).
     matches: (item, value) => rowSupplierId(item) === value,
   },
   {
@@ -2401,10 +2401,19 @@ function pickableBatches(item, exceptLineId) {
     .sort(byRentFree);
 }
 // What the Orders tab row shows: the oldest batch, or null (no landed stock).
+// While the Orders list is filtered by supplier or warehouse, the oldest batch
+// that matches the filter is shown instead, so an item with any matching batch
+// (not just its oldest one) shows up under that filter.
+function batchMatchesOrderFilter(b, item) {
+  if (!state.filterValue) return false;
+  if (state.filterField === 'warehouse') return shipmentWarehouseId(b) === state.filterValue;
+  if (state.filterField === 'supplier') return (b.supplierId || item.supplierId) === state.filterValue;
+  return false;
+}
 function orderRowBatch(item) {
   const batches = pickableBatches(item);
   if (!batches.length) return null;
-  const b = batches[0];
+  const b = batches.find((x) => batchMatchesOrderFilter(x, item)) || batches[0];
   return {
     batch: b,
     supplierId: b.supplierId || item.supplierId,
